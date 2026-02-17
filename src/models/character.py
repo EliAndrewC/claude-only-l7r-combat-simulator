@@ -76,6 +76,18 @@ class Character(BaseModel):
     xp_spent: int = Field(default=0, ge=0)
     void_points: int = Field(default=0, ge=0)
     profession_abilities: list[ProfessionAbility] = Field(default_factory=list)
+    school_knacks: list[str] = Field(default_factory=list)
+
+    @property
+    def dan(self) -> int:
+        """Dan level: minimum rank among all school knacks, or 0 if none."""
+        if not self.school_knacks:
+            return 0
+        ranks = []
+        for name in self.school_knacks:
+            skill = self.get_skill(name)
+            ranks.append(skill.rank if skill else 0)
+        return min(ranks) if ranks else 0
 
     @property
     def void_points_max(self) -> int:

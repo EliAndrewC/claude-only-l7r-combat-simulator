@@ -17,6 +17,7 @@ class ActionType(str, Enum):
     IAIJUTSU = "iaijutsu"
     SPELL = "spell"
     INTERRUPT = "interrupt"
+    DOUBLE_ATTACK = "double attack"
 
 
 class WoundTracker(BaseModel):
@@ -47,6 +48,8 @@ class FighterStatus(BaseModel):
     actions_remaining: list[int] = Field(default_factory=list)
     void_points: int = 0
     void_points_max: int = 0
+    temp_void_points: int = 0
+    dan_points: int = 0
 
 
 class CombatAction(BaseModel):

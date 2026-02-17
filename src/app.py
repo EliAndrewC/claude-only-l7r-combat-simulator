@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from src.engine.mirumoto import compute_mirumoto_stats_from_xp
 from src.engine.waveman import (
     WAVE_MAN_ABILITY_NAMES,
     compute_abilities,
@@ -47,7 +48,19 @@ def _maybe_repopulate_stats(prefix: str, build_choice: str,
     if not changed:
         return
 
-    if build_choice == "Wave Man":
+    # Default weapon when build mode changes
+    if last_mode != build_choice:
+        if build_choice == "Wave Man":
+            st.session_state[f"{prefix}_weapon"] = WeaponType.SPEAR
+        else:
+            st.session_state[f"{prefix}_weapon"] = WeaponType.KATANA
+
+    if build_choice == "Mirumoto Bushi":
+        stats = compute_mirumoto_stats_from_xp(
+            earned_xp=earned_xp,
+            non_combat_pct=non_combat / 100.0,
+        )
+    elif build_choice == "Wave Man":
         stats = compute_waveman_stats_from_xp(
             earned_xp=earned_xp,
             non_combat_pct=non_combat / 100.0,
@@ -64,27 +77,32 @@ def _maybe_repopulate_stats(prefix: str, build_choice: str,
     st.session_state[f"{prefix}_atk"] = stats.attack
     st.session_state[f"{prefix}_parry"] = stats.parry
 
+    # Mirumoto knack ranks
+    if build_choice == "Mirumoto Bushi":
+        for knack_key, rank in stats.knack_ranks.items():
+            st.session_state[f"{prefix}_knack_{knack_key}"] = rank
+
     st.session_state[f"{prefix}_last_xp"] = earned_xp
     st.session_state[f"{prefix}_last_nc"] = non_combat
     st.session_state[f"{prefix}_last_school_ring"] = school_ring
     st.session_state[f"{prefix}_last_preset"] = build_choice
 
 
-def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, WeaponType]:
-    """Build character configuration in the sidebar, returning character and weapon type."""
+def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, WeaponType, str]:
+    """Build character configuration in the sidebar, returning character, weapon type, and build choice."""
     st.sidebar.header(f"{label}")
 
-    build_options = ["Base", "Wave Man"]
+    build_options = ["Base", "Wave Man", "Mirumoto Bushi"]
     build_choice = st.sidebar.selectbox(
         f"{label} Build", build_options, index=0, key=f"{key_prefix}_preset"
     )
 
     # --- XP sliders (both modes) ---
     earned_xp = st.sidebar.slider(
-        f"{label} Earned XP", 0, 350, 0, step=10, key=f"{key_prefix}_earned_xp"
+        f"{build_choice} Earned XP", 0, 350, 0, step=10, key=f"{key_prefix}_earned_xp"
     )
     non_combat = st.sidebar.slider(
-        f"{label} Non-combat XP %", 0, 50, 20, key=f"{key_prefix}_noncombat"
+        f"{build_choice} Non-combat XP %", 0, 50, 20, key=f"{key_prefix}_noncombat"
     )
 
     # --- School Ring (Base only) ---
@@ -92,7 +110,7 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     if build_choice == "Base":
         ring_options: list[RingName | None] = [None] + list(RingName)
         school_ring_choice = st.sidebar.selectbox(
-            f"{label} School Ring",
+            f"{build_choice} School Ring",
             ring_options,
             format_func=lambda r: "None" if r is None else r.value,
             key=f"{key_prefix}_school_ring",
@@ -116,12 +134,42 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     st.sidebar.markdown("**Skills**")
     atk_default = st.session_state.get(f"{key_prefix}_atk", 0)
     atk_rank = st.sidebar.slider(
-        f"{label} Attack", 0, 5, atk_default, key=f"{key_prefix}_atk"
+        f"{build_choice} Attack", 0, 5, atk_default, key=f"{key_prefix}_atk"
     )
     parry_default = st.session_state.get(f"{key_prefix}_parry", 0)
     parry_rank = st.sidebar.slider(
-        f"{label} Parry", 0, 5, parry_default, key=f"{key_prefix}_parry"
+        f"{build_choice} Parry", 0, 5, parry_default, key=f"{key_prefix}_parry"
     )
+
+    # --- Knack sliders (Mirumoto only) ---
+    knack_ranks: dict[str, int] = {}
+    if build_choice == "Mirumoto Bushi":
+        knack_display = {"counterattack": "Counterattack", "double_attack": "Double Attack", "iaijutsu": "Iaijutsu"}
+        st.sidebar.markdown("**School Knacks**")
+        for knack_key, knack_name in knack_display.items():
+            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            knack_ranks[knack_key] = st.sidebar.slider(
+                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+            )
+        # Dan level display (read-only)
+        dan_level = min(knack_ranks.values()) if knack_ranks else 0
+        st.sidebar.text(f"Dan: {dan_level}")
+        # Active techniques display
+        techniques = []
+        if dan_level >= 1:
+            techniques.append("1st: +1 die attack/parry")
+        if dan_level >= 2:
+            techniques.append("2nd: free raise on parry")
+        if dan_level >= 3:
+            techniques.append("3rd: phase shift + roll bonus")
+        if dan_level >= 4:
+            techniques.append("4th: half parry reduction")
+        if dan_level >= 5:
+            techniques.append("5th: +10/void on combat")
+        if dan_level >= 1:
+            techniques.append("SA: temp void on parry")
+        if techniques:
+            st.sidebar.text("Techniques: " + ", ".join(techniques))
 
     # --- Abilities display (Wave Man only, read-only) ---
     if build_choice == "Wave Man":
@@ -134,7 +182,7 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
 
     # --- Weapon selectbox ---
     weapon_type_choice = st.sidebar.selectbox(
-        f"{label} Weapon",
+        f"{build_choice} Weapon",
         list(WeaponType),
         format_func=lambda w: f"{WEAPONS[w].name} ({WEAPONS[w].dice_str})",
         key=f"{key_prefix}_weapon",
@@ -153,20 +201,42 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         Skill(name="Parry", rank=parry_rank, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
     ]
 
+    # Mirumoto: add knack skills
+    if build_choice == "Mirumoto Bushi":
+        knack_display_names = {"counterattack": "Counterattack", "double_attack": "Double Attack", "iaijutsu": "Iaijutsu"}
+        for knack_key, knack_name in knack_display_names.items():
+            skills.append(Skill(
+                name=knack_name,
+                rank=knack_ranks.get(knack_key, 1),
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ))
+
     profession_abilities = compute_abilities(earned_xp) if build_choice == "Wave Man" else []
-    school_ring_val = school_ring_choice if build_choice == "Base" else None
+
+    school_name = None
+    school_ring_val = None
+    school_knacks_val: list[str] = []
+    if build_choice == "Base":
+        school_ring_val = school_ring_choice
+    elif build_choice == "Mirumoto Bushi":
+        school_name = "Mirumoto Bushi"
+        school_ring_val = RingName.VOID
+        school_knacks_val = ["Counterattack", "Double Attack", "Iaijutsu"]
 
     char = Character(
         name=label,
         rings=rings,
         skills=skills,
+        school=school_name,
         school_ring=school_ring_val,
+        school_knacks=school_knacks_val,
         profession_abilities=profession_abilities,
     )
-    return char, weapon_type_choice
+    return char, weapon_type_choice, build_choice
 
 
-_VALID_BUILD_MODES = {"Base", "Wave Man"}
+_VALID_BUILD_MODES = {"Base", "Wave Man", "Mirumoto Bushi"}
 
 # --- Restore slider values from URL on page refresh ---
 for _pf in ("f1", "f2"):
@@ -191,8 +261,16 @@ for _pf in ("f1", "f2"):
             pass
 
 # --- Sidebar: Character configuration ---
-char_a, wt_a = _build_character_sidebar("Fighter 1", "f1")
-char_b, wt_b = _build_character_sidebar("Fighter 2", "f2")
+char_a, wt_a, build_a = _build_character_sidebar("Fighter 1", "f1")
+char_b, wt_b, build_b = _build_character_sidebar("Fighter 2", "f2")
+
+# Compute display names from build choices
+if build_a == build_b:
+    char_a.name = f"{build_a} 1"
+    char_b.name = f"{build_b} 2"
+else:
+    char_a.name = build_a
+    char_b.name = build_b
 
 # --- Sync slider values to URL for persistence across refreshes ---
 for _pf in ("f1", "f2"):

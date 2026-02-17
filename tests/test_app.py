@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from streamlit.testing.v1 import AppTest
 
+from src.engine.mirumoto import compute_mirumoto_stats_from_xp
 from src.engine.xp_builder import compute_stats_from_xp
 from src.engine.waveman import compute_waveman_stats_from_xp
 from src.models.combat import ActionType, CombatAction, CombatLog
-from src.ui_helpers import _group_action_sequences, compute_combat_stats, extract_annotations
+from src.models.weapon import WeaponType
+from src.models.combat import FighterStatus
+from src.ui_helpers import _damage_icon, _format_fighter_status, _group_action_sequences, _parry_icon, _wound_check_icon, compute_combat_stats, extract_annotations
 
 
 class TestAppLoads:
@@ -282,6 +285,99 @@ class TestGroupActionSequences:
         assert len(seqs) == 1
         assert len(seqs[0]) == 2
 
+    def test_double_attack_starts_new_sequence(self) -> None:
+        actions = [
+            _action(ActionType.INITIATIVE, actor="A"),
+            _action(ActionType.INITIATIVE, actor="B"),
+            _action(ActionType.DOUBLE_ATTACK, phase=1, actor="A"),
+            _action(ActionType.INTERRUPT, phase=1, actor="B"),
+            _action(ActionType.DAMAGE, phase=1, actor="A"),
+            _action(ActionType.WOUND_CHECK, phase=1, actor="B"),
+            _action(ActionType.DOUBLE_ATTACK, phase=2, actor="A"),
+            _action(ActionType.DAMAGE, phase=2, actor="A"),
+            _action(ActionType.WOUND_CHECK, phase=2, actor="B"),
+        ]
+        seqs = _group_action_sequences(actions)
+        assert len(seqs) == 3
+        assert seqs[0][0].action_type == ActionType.INITIATIVE
+        assert seqs[1][0].action_type == ActionType.DOUBLE_ATTACK
+        assert seqs[1][0].phase == 1
+        assert len(seqs[1]) == 4
+        assert seqs[2][0].action_type == ActionType.DOUBLE_ATTACK
+        assert seqs[2][0].phase == 2
+        assert len(seqs[2]) == 3
+
+
+class TestWoundCheckIcon:
+    """Tests for dynamic wound check icons."""
+
+    def test_passed_wound_check_black_heart(self) -> None:
+        action = _action(ActionType.WOUND_CHECK, actor="A")
+        action.success = True
+        action.description = "A wound check: passed (rolled 25)"
+        assert _wound_check_icon(action) == "🖤"
+
+    def test_failed_wound_check_one_serious(self) -> None:
+        action = _action(ActionType.WOUND_CHECK, actor="A")
+        action.success = False
+        action.tn = 20
+        action.total = 15
+        action.description = "A wound check: failed (rolled 15)"
+        assert _wound_check_icon(action) == "💔"
+
+    def test_failed_wound_check_multiple_serious(self) -> None:
+        action = _action(ActionType.WOUND_CHECK, actor="A")
+        action.success = False
+        action.tn = 49
+        action.total = 34
+        action.description = "A wound check: failed (rolled 34)"
+        # 1 + (49 - 34) // 10 = 1 + 1 = 2
+        assert _wound_check_icon(action) == "💔💔"
+
+    def test_converted_wound_check_broken_heart(self) -> None:
+        action = _action(ActionType.WOUND_CHECK, actor="A")
+        action.success = True
+        action.description = "A wound check: passed (rolled 25) — converted light wounds to 1 serious wound"
+        assert _wound_check_icon(action) == "💔"
+
+
+class TestParryIcon:
+    """Tests for dynamic parry icons."""
+
+    def test_successful_parry(self) -> None:
+        action = _action(ActionType.PARRY, actor="A")
+        action.success = True
+        assert _parry_icon(action) == "🛡️"
+
+    def test_failed_parry(self) -> None:
+        action = _action(ActionType.PARRY, actor="A")
+        action.success = False
+        assert _parry_icon(action) == "🛡️💢"
+
+    def test_successful_interrupt(self) -> None:
+        action = _action(ActionType.INTERRUPT, actor="A")
+        action.success = True
+        assert _parry_icon(action) == "🛡️"
+
+    def test_failed_interrupt(self) -> None:
+        action = _action(ActionType.INTERRUPT, actor="A")
+        action.success = False
+        assert _parry_icon(action) == "🛡️💢"
+
+
+class TestDamageIcon:
+    """Tests for dynamic damage icons."""
+
+    def test_normal_damage(self) -> None:
+        action = _action(ActionType.DAMAGE, actor="A")
+        action.description = "damage: 25"
+        assert _damage_icon(action) == "💥"
+
+    def test_double_attack_damage(self) -> None:
+        action = _action(ActionType.DAMAGE, actor="A")
+        action.description = "damage: 25 (double attack: +1 serious wound)"
+        assert _damage_icon(action) == "💔💥"
+
 
 class TestComputeCombatStats:
     def _make_log(self) -> CombatLog:
@@ -409,3 +505,131 @@ class TestMergedBuildMode:
         wm_stats = compute_waveman_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
         for rn in ("air", "fire", "earth", "water", "void"):
             assert at.session_state[f"f1_{rn}"] == wm_stats.ring_values[rn]
+
+
+class TestMirumotoUI:
+    """Tests for Mirumoto Bushi build mode UI."""
+
+    def test_mirumoto_option_loads(self) -> None:
+        """Selecting 'Mirumoto Bushi' doesn't crash."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Mirumoto Bushi").run()
+        assert not at.exception
+
+    def test_mirumoto_fight_works(self) -> None:
+        """Two Mirumoto Bushi can fight without errors."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Mirumoto Bushi").run()
+        at.selectbox(key="f2_preset").set_value("Mirumoto Bushi").run()
+        at.button[0].click().run()
+        assert not at.exception
+        has_result = len(at.success) > 0 or len(at.warning) > 0
+        assert has_result
+
+    def test_mirumoto_shows_knack_sliders(self) -> None:
+        """Mirumoto mode has knack slider widgets."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Mirumoto Bushi").run()
+        assert not at.exception
+        # Knack sliders should exist
+        assert at.slider(key="f1_knack_counterattack") is not None
+        assert at.slider(key="f1_knack_double_attack") is not None
+        assert at.slider(key="f1_knack_iaijutsu") is not None
+
+    def test_mirumoto_build_mode_persists(self) -> None:
+        """Build mode query param round-trip for Mirumoto."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.query_params["f1_build"] = "Mirumoto Bushi"
+        at.run()
+        assert not at.exception
+        assert at.session_state["f1_preset"] == "Mirumoto Bushi"
+
+    def test_mirumoto_rings_from_xp(self) -> None:
+        """Mirumoto ring values match compute_mirumoto_stats_from_xp."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Mirumoto Bushi").run()
+        stats = compute_mirumoto_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        assert at.session_state["f1_void"] == stats.ring_values["void"]
+        assert at.session_state["f1_air"] == stats.ring_values["air"]
+
+    def test_switching_to_mirumoto_repopulates(self) -> None:
+        """Switching from Base to Mirumoto recomputes ring values."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Mirumoto Bushi").run()
+        stats = compute_mirumoto_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        for rn in ("air", "fire", "earth", "water", "void"):
+            assert at.session_state[f"f1_{rn}"] == stats.ring_values[rn]
+
+
+class TestDefaultWeapon:
+    """Tests for default weapon selection based on build mode."""
+
+    def test_waveman_defaults_to_spear(self) -> None:
+        """Selecting Wave Man sets weapon to Spear."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Wave Man").run()
+        assert at.session_state["f1_weapon"] == WeaponType.SPEAR
+
+    def test_mirumoto_defaults_to_katana(self) -> None:
+        """Selecting Mirumoto Bushi sets weapon to Katana."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Mirumoto Bushi").run()
+        assert at.session_state["f1_weapon"] == WeaponType.KATANA
+
+    def test_base_defaults_to_katana(self) -> None:
+        """Switching back to Base sets weapon to Katana."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Wave Man").run()
+        assert at.session_state["f1_weapon"] == WeaponType.SPEAR
+        at.selectbox(key="f1_preset").set_value("Base").run()
+        assert at.session_state["f1_weapon"] == WeaponType.KATANA
+
+
+class TestDanPointsUI:
+    """Tests for 3rd Dan and temp void display in UI."""
+
+    def test_temp_void_displayed_in_status(self) -> None:
+        """Temp void shown as separate 'Temp Void N' entry."""
+        status = FighterStatus(
+            void_points=3, void_points_max=3, temp_void_points=1, actions_remaining=[5],
+        )
+        result = _format_fighter_status("Mirumoto", status)
+        assert "Temp Void 1" in result
+
+    def test_dan_points_displayed_in_status(self) -> None:
+        """Dan points shown as '3rd Dan points: 6' when > 0."""
+        status = FighterStatus(
+            void_points=3, void_points_max=3, dan_points=6,
+            actions_remaining=[3, 7],
+        )
+        result = _format_fighter_status("Mirumoto", status)
+        assert "3rd Dan points: 6" in result
+
+    def test_dan_points_hidden_when_zero(self) -> None:
+        """Dan points not shown when 0."""
+        status = FighterStatus(
+            void_points=3, void_points_max=3, dan_points=0,
+            actions_remaining=[3, 7],
+        )
+        result = _format_fighter_status("Mirumoto", status)
+        assert "3rd Dan points" not in result
+
+    def test_mirumoto_sa_annotation_extracted(self) -> None:
+        """extract_annotations picks up SA temp void text."""
+        desc = "Mirumoto parries: 5k3 vs TN 20 (mirumoto SA: +1 temp void)"
+        result = extract_annotations(desc)
+        assert "(mirumoto SA: +1 temp void)" in result
+
+    def test_3rd_dan_annotation_extracted(self) -> None:
+        """extract_annotations picks up 3rd Dan bonus text."""
+        desc = "Mirumoto attacks: 6k3 vs TN 15 (3rd dan: +4 bonus, 2 pts)"
+        result = extract_annotations(desc)
+        assert "(3rd dan: +4 bonus, 2 pts)" in result

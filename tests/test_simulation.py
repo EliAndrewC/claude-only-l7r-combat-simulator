@@ -5,6 +5,7 @@ from unittest.mock import patch
 from src.engine.combat import create_combat_log
 from src.engine.simulation import (
     _apply_ability4_rounding,
+    _compute_dan_roll_bonus,
     _damage_pool_str,
     _format_pool_with_overflow,
     _resolve_attack,
@@ -13,7 +14,11 @@ from src.engine.simulation import (
     _should_predeclare_parry,
     _should_spend_void_on_wound_check,
     _snapshot_status,
+    _spend_void,
     _tiebreak_key,
+    _total_void,
+    _void_spent_label,
+    _try_phase_shift_parry,
     simulate_combat,
 )
 from src.models.character import Character, ProfessionAbility, Ring, RingName, Rings, Skill, SkillType
@@ -2166,3 +2171,1145 @@ class TestWaveManSmokeTest:
         for _ in range(5):
             log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
             assert log.combatants == ["WM", "Samurai"]
+
+
+def _make_mirumoto(
+    name: str,
+    knack_rank: int = 1,
+    attack_rank: int = 3,
+    parry_rank: int = 2,
+    double_attack_rank: int | None = None,
+    **ring_overrides: int,
+) -> Character:
+    """Helper to create a Mirumoto Bushi character."""
+    kwargs = {}
+    for ring_name in ["air", "fire", "earth", "water", "void"]:
+        val = ring_overrides.get(ring_name, 2)
+        kwargs[ring_name] = Ring(name=RingName(ring_name.capitalize()), value=val)
+    da_rank = double_attack_rank if double_attack_rank is not None else knack_rank
+    return Character(
+        name=name,
+        rings=Rings(**kwargs),
+        school="Mirumoto Bushi",
+        school_ring=RingName.VOID,
+        school_knacks=["Counterattack", "Double Attack", "Iaijutsu"],
+        skills=[
+            Skill(name="Attack", rank=attack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=parry_rank, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+            Skill(name="Counterattack", rank=knack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Double Attack", rank=da_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Iaijutsu", rank=knack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+        ],
+    )
+
+
+class TestMirumotoFirstDan:
+    """First Dan: +1 rolled die on attack and parry."""
+
+    def test_first_dan_extra_attack_die(self) -> None:
+        """Attack pool is skill+ring+1 for Mirumoto with dan >= 1."""
+        a = _make_mirumoto("Miru", knack_rank=1, attack_rank=3, fire=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(
+            ["Miru", "Target"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+
+        fighters = {
+            "Miru": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Miru": [5], "Target": [3, 7]}
+        void_points = {"Miru": 0, "Target": 2}
+
+        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+             patch("src.engine.simulation.roll_attack") as mock_attack:
+            from src.models.combat import CombatAction
+            mock_da.return_value = (False, 0)
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Miru", action_type=ActionType.ATTACK,
+                target="Target", dice_rolled=[8, 7, 5, 4, 3, 2, 1],
+                dice_kept=[8, 7, 5], total=20, tn=5, success=True,
+                description="Miru attacks",
+            )
+            _resolve_attack(
+                log, 5, fighters["Miru"], fighters["Target"],
+                "Miru", "Target", fighters, actions_remaining, void_points,
+            )
+            # roll_attack gets effective_atk_rank = 3 + 1 (1st Dan) = 4
+            call_args = mock_attack.call_args
+            assert call_args[0][1] == 4  # attack_skill passed as 4 (3+1)
+
+    def test_first_dan_extra_parry_die(self) -> None:
+        """Parry pool is skill+ring+1 for Mirumoto defender with dan >= 1."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("MiruDef", knack_rank=1, parry_rank=2, air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "MiruDef"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "MiruDef": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "MiruDef": [5, 7]}
+        void_points = {"Attacker": 2, "MiruDef": 0}  # 0 void prevents combat void spending
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="MiruDef", dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=35, tn=15, success=True, description="Attacker attacks",
+            )
+            mock_rak.return_value = ([20, 15, 8], [20, 15, 8], 43)
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["MiruDef"],
+                "Attacker", "MiruDef", fighters, actions_remaining, void_points,
+            )
+            # Parry roll_and_keep should get rolled = parry(2) + air(3) + 1 = 6
+            parry_call = mock_rak.call_args
+            assert parry_call[0][0] == 6  # 2 + 3 + 1 = 6 rolled
+
+
+class TestMirumotoSecondDan:
+    """Second Dan: free raise (+5) on parry rolls."""
+
+    def test_second_dan_free_raise_parry(self) -> None:
+        """Parry total gets +5 bonus for Mirumoto with dan >= 2."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("MiruDef", knack_rank=2, parry_rank=3, air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "MiruDef"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "MiruDef": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "MiruDef": [5, 7]}
+        void_points = {"Attacker": 2, "MiruDef": 2}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="MiruDef", dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=25, tn=20, success=True, description="Attacker attacks",
+            )
+            # Parry roll: total 22, plus 5 free raise = 27 >= 25 = success
+            mock_rak.return_value = ([12, 10, 8, 5, 3], [12, 10, 8], 30)
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["MiruDef"],
+                "Attacker", "MiruDef", fighters, actions_remaining, void_points,
+            )
+            # Find the parry action in the log
+            parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+            assert len(parry_actions) >= 1
+            # The parry total should include +5 from 2nd Dan free raise
+            assert "mirumoto: free raise +5" in parry_actions[-1].description
+
+
+class TestMirumotoSpecialAbility:
+    """Special Ability: temp void on parry attempt."""
+
+    def test_special_ability_temp_void_on_parry(self) -> None:
+        """Temp void increases by 1 after any parry attempt by Mirumoto."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("MiruDef", knack_rank=1, parry_rank=2, air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "MiruDef"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "MiruDef": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "MiruDef": [5, 7]}
+        # Start with 1 void — too low for combat void spending (reserves 1)
+        void_points = {"Attacker": 2, "MiruDef": 1}
+        temp_void: dict[str, int] = {"Attacker": 0, "MiruDef": 0}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="MiruDef", dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=20, tn=15, success=True, description="Attacker attacks",
+            )
+            # Parry succeeds (returns early, no wound check to consume void)
+            mock_rak.return_value = ([15, 10, 8], [15, 10, 8], 33)
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["MiruDef"],
+                "Attacker", "MiruDef", fighters, actions_remaining, void_points,
+                temp_void=temp_void,
+            )
+            # Regular void stays at 1, temp void increased by 1
+            assert void_points["MiruDef"] == 1
+            assert temp_void["MiruDef"] == 1
+
+
+class TestMirumotoFourthDan:
+    """Fourth Dan: failed parries subtract half extra damage dice."""
+
+    def test_fourth_dan_half_parry_reduction(self) -> None:
+        """Failed parry against 4th Dan Mirumoto only subtracts half parry rank."""
+        a = _make_mirumoto("MiruAtk", knack_rank=4, attack_rank=4, fire=4, earth=4, void=4)
+        b = _make_character("Defender", fire=3, earth=3, air=3, void=3)
+
+        log = create_combat_log(
+            ["MiruAtk", "Defender"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+
+        fighters = {
+            "MiruAtk": {"char": a, "weapon": KATANA},
+            "Defender": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"MiruAtk": [5], "Defender": [5, 7]}
+        void_points = {"MiruAtk": 0, "Defender": 0}
+
+        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+             patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak, \
+             patch("src.engine.simulation.roll_damage") as mock_dmg:
+            from src.models.combat import CombatAction
+            mock_da.return_value = (False, 0)
+            # Attack hits with big total: 40 vs TN 15 = 5 extra dice
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="MiruAtk", action_type=ActionType.ATTACK,
+                target="Defender", dice_rolled=[20, 15, 10, 8],
+                dice_kept=[20, 15, 10, 8], total=40, tn=15, success=True,
+                description="MiruAtk attacks",
+            )
+            # Parry fails
+            mock_rak.return_value = ([8, 5, 3], [8, 5, 3], 16)
+            mock_dmg.return_value = CombatAction(
+                phase=5, actor="MiruAtk", action_type=ActionType.DAMAGE,
+                total=25, description="MiruAtk deals 25 damage",
+                dice_rolled=[10, 8, 5], dice_kept=[10, 8], dice_pool="7k2",
+            )
+            _resolve_attack(
+                log, 5, fighters["MiruAtk"], fighters["Defender"],
+                "MiruAtk", "Defender", fighters, actions_remaining, void_points,
+            )
+            # Extra dice: (40-15)//5 = 5. Defender parry rank = 2.
+            # 4th Dan: subtract half = 2//2 = 1 instead of 2.
+            # So extra = 5 - 1 = 4 (instead of 5 - 2 = 3)
+            dmg_call = mock_dmg.call_args
+            extra_dice_arg = dmg_call[1].get("extra_dice", dmg_call[0][3] if len(dmg_call[0]) > 3 else 0)
+            assert extra_dice_arg == 4
+
+
+class TestMirumotoFifthDan:
+    """Fifth Dan: void spending adds +10 per void on combat rolls."""
+
+    def test_fifth_dan_void_bonus(self) -> None:
+        """When 5th Dan Mirumoto spends void, each void adds +10 to combat roll."""
+        from src.engine.simulation import _should_spend_void_on_combat_roll
+        # High TN, void should provide +10 per void = much more valuable
+        spend = _should_spend_void_on_combat_roll(
+            rolled=6, kept=3, tn=30,
+            void_available=2, max_spend=2,
+            fifth_dan_bonus=10,
+        )
+        assert spend >= 1
+
+
+class TestVoidSpendOnCombatRoll:
+    """Void spending on attack/parry rolls."""
+
+    def test_void_spend_on_attack_when_helpful(self) -> None:
+        """Spends void when close to TN."""
+        from src.engine.simulation import _should_spend_void_on_combat_roll
+        spend = _should_spend_void_on_combat_roll(
+            rolled=5, kept=3, tn=25,
+            void_available=2, max_spend=2,
+            fifth_dan_bonus=0,
+        )
+        assert spend >= 1
+
+    def test_void_not_spent_when_easy_hit(self) -> None:
+        """Doesn't spend when roll easily exceeds TN."""
+        from src.engine.simulation import _should_spend_void_on_combat_roll
+        spend = _should_spend_void_on_combat_roll(
+            rolled=8, kept=4, tn=10,
+            void_available=2, max_spend=2,
+            fifth_dan_bonus=0,
+        )
+        assert spend == 0
+
+    def test_void_reserved_for_wound_checks(self) -> None:
+        """Never spends all void — result < void_available."""
+        from src.engine.simulation import _should_spend_void_on_combat_roll
+        # Only 1 void available — shouldn't spend the last one
+        spend = _should_spend_void_on_combat_roll(
+            rolled=5, kept=3, tn=20,
+            void_available=1, max_spend=1,
+            fifth_dan_bonus=0,
+        )
+        assert spend == 0
+
+
+class TestDoubleAttack:
+    """Double Attack knack tests."""
+
+    def test_double_attack_tn_raised_by_20(self) -> None:
+        """Double Attack raises TN by 20."""
+        a = _make_mirumoto("MiruAtk", knack_rank=3, attack_rank=4,
+                           double_attack_rank=3, fire=4, earth=3, void=4)
+        b = _make_character("Defender", fire=2, earth=3, air=2, void=2)
+        b.skills = [Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(
+            ["MiruAtk", "Defender"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+
+        fighters = {
+            "MiruAtk": {"char": a, "weapon": KATANA},
+            "Defender": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"MiruAtk": [5], "Defender": [3, 7]}
+        void_points = {"MiruAtk": 3, "Defender": 2}
+
+        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak, \
+             patch("src.engine.simulation.roll_damage") as mock_dmg:
+            from src.models.combat import CombatAction
+            mock_da.return_value = (True, 0)
+            # Roll succeeds even with TN+20
+            mock_rak.return_value = ([20, 15, 10, 8], [20, 15, 10, 8], 53)
+            mock_dmg.return_value = CombatAction(
+                phase=5, actor="MiruAtk", action_type=ActionType.DOUBLE_ATTACK,
+                total=25, description="MiruAtk deals 25 damage",
+                dice_rolled=[10, 8, 5], dice_kept=[10, 8], dice_pool="7k2",
+            )
+            _resolve_attack(
+                log, 5, fighters["MiruAtk"], fighters["Defender"],
+                "MiruAtk", "Defender", fighters, actions_remaining, void_points,
+            )
+            # The attack action in log should have TN = base TN + 20
+            da_actions = [a for a in log.actions if a.action_type == ActionType.DOUBLE_ATTACK]
+            assert len(da_actions) >= 1
+            base_tn = 5 + 5 * 0  # defender has no parry
+            assert da_actions[0].tn == base_tn + 20
+
+    def test_double_attack_skipped_when_rank_0(self) -> None:
+        """Double attack is never used when rank is 0."""
+        a = _make_mirumoto("MiruAtk", knack_rank=1, attack_rank=3,
+                           double_attack_rank=0, fire=3, earth=3, void=3)
+        b = _make_character("Defender", fire=2, earth=3, void=2)
+
+        log = create_combat_log(
+            ["MiruAtk", "Defender"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+
+        fighters = {
+            "MiruAtk": {"char": a, "weapon": KATANA},
+            "Defender": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"MiruAtk": [5], "Defender": [3, 7]}
+        void_points = {"MiruAtk": 2, "Defender": 2}
+
+        _resolve_attack(
+            log, 5, fighters["MiruAtk"], fighters["Defender"],
+            "MiruAtk", "Defender", fighters, actions_remaining, void_points,
+        )
+        # No double attack action should appear
+        da_actions = [a for a in log.actions if a.action_type == ActionType.DOUBLE_ATTACK]
+        assert len(da_actions) == 0
+
+    def test_double_attack_inflicts_serious_wound(self) -> None:
+        """Double attack inflicts 1 extra serious wound when no parry."""
+        a = _make_mirumoto("MiruAtk", knack_rank=3, attack_rank=4,
+                           double_attack_rank=3, fire=4, earth=3, void=4)
+        b = _make_character("Defender", fire=2, earth=3, air=2, void=2)
+        b.skills = [Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(
+            ["MiruAtk", "Defender"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+
+        fighters = {
+            "MiruAtk": {"char": a, "weapon": KATANA},
+            "Defender": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"MiruAtk": [5], "Defender": [3, 7]}
+        void_points = {"MiruAtk": 3, "Defender": 2}
+
+        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak, \
+             patch("src.engine.simulation.roll_damage") as mock_dmg, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            from src.models.combat import CombatAction
+            mock_da.return_value = (True, 0)
+            mock_rak.return_value = ([20, 15, 10, 8], [20, 15, 10, 8], 53)
+            mock_dmg.return_value = CombatAction(
+                phase=5, actor="MiruAtk", action_type=ActionType.DOUBLE_ATTACK,
+                total=20, description="MiruAtk deals 20 damage",
+                dice_rolled=[10, 8, 5], dice_kept=[10, 8], dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 30, [15, 10, 5], [15, 10])
+            _resolve_attack(
+                log, 5, fighters["MiruAtk"], fighters["Defender"],
+                "MiruAtk", "Defender", fighters, actions_remaining, void_points,
+            )
+            # Double attack should inflict 1 extra serious wound
+            assert log.wounds["Defender"].serious_wounds >= 1
+
+
+class TestMirumotoSmokeTest:
+    """Full simulation smoke tests with Mirumoto characters."""
+
+    def test_two_mirumoto_fight(self) -> None:
+        """Two Mirumoto Bushi can fight 20 rounds without errors."""
+        a = _make_mirumoto("M1", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        b = _make_mirumoto("M2", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+        assert log.combatants == ["M1", "M2"]
+
+    def test_mirumoto_vs_samurai(self) -> None:
+        """A Mirumoto vs a regular samurai completes without errors."""
+        a = _make_mirumoto("Miru", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        b = _make_character("Samurai", fire=4, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+        assert log.combatants == ["Miru", "Samurai"]
+
+    def test_mirumoto_vs_waveman(self) -> None:
+        """A Mirumoto vs a Wave Man completes without errors."""
+        a = _make_mirumoto("Miru", knack_rank=2, attack_rank=3, fire=3, earth=3, void=3, air=3)
+        b = _make_waveman("WM", abilities=[(1, 1), (4, 1), (7, 1)], fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+        assert log.combatants == ["Miru", "WM"]
+
+    def test_5th_dan_mirumoto_fight(self) -> None:
+        """5th Dan Mirumoto (all knacks 5) fights without errors."""
+        a = _make_mirumoto("M5", knack_rank=5, attack_rank=5, parry_rank=5,
+                           fire=5, earth=5, void=6, air=5, water=5)
+        b = _make_character("Samurai", fire=5, earth=5, void=5, air=5, water=5)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["M5", "Samurai"]
+
+
+# ===================================================================
+# Step 1: dan_points model tests
+# ===================================================================
+
+
+class TestDanPointsModel:
+    def test_fighter_status_dan_points_default(self) -> None:
+        """FighterStatus.dan_points defaults to 0."""
+        status = FighterStatus()
+        assert status.dan_points == 0
+
+    def test_fighter_status_dan_points_set(self) -> None:
+        """FighterStatus(dan_points=6) works."""
+        status = FighterStatus(dan_points=6)
+        assert status.dan_points == 6
+
+
+# ===================================================================
+# Step 2a: Temp void separation tests
+# ===================================================================
+
+
+class TestTempVoidSeparation:
+    """Tests for the _spend_void / _total_void helpers and temp void tracking."""
+
+    def test_spend_void_temp_first(self) -> None:
+        """_spend_void deducts from temp_void before regular void."""
+        void_points = {"A": 3}
+        temp_void = {"A": 2}
+        from_temp, from_reg = _spend_void(void_points, temp_void, "A", 3)
+        assert from_temp == 2
+        assert from_reg == 1
+        assert temp_void["A"] == 0  # 2 temp consumed
+        assert void_points["A"] == 2  # only 1 regular consumed
+
+    def test_spend_void_temp_only(self) -> None:
+        """_spend_void uses only temp when temp covers the full amount."""
+        void_points = {"A": 3}
+        temp_void = {"A": 2}
+        from_temp, from_reg = _spend_void(void_points, temp_void, "A", 1)
+        assert from_temp == 1
+        assert from_reg == 0
+        assert temp_void["A"] == 1
+        assert void_points["A"] == 3  # untouched
+
+    def test_total_void_sums_both(self) -> None:
+        """_total_void returns regular + temp."""
+        void_points = {"A": 3}
+        temp_void = {"A": 2}
+        assert _total_void(void_points, temp_void, "A") == 5
+
+    def test_void_spent_label_temp_only(self) -> None:
+        assert _void_spent_label(1, 0) == "1 temp void spent"
+
+    def test_void_spent_label_regular_only(self) -> None:
+        assert _void_spent_label(0, 2) == "2 void spent"
+
+    def test_void_spent_label_mixed(self) -> None:
+        assert _void_spent_label(1, 1) == "2 void spent (1 temp)"
+
+    def test_void_spent_label_zero(self) -> None:
+        assert _void_spent_label(0, 0) == ""
+
+    def test_temp_void_tracked_in_snapshot(self) -> None:
+        """FighterStatus snapshot includes temp_void_points."""
+        a = _make_character("A")
+        b = _make_character("B")
+        log = create_combat_log(["A", "B"], [2, 2])
+        fighters = {"A": {"char": a, "weapon": KATANA}, "B": {"char": b, "weapon": KATANA}}
+        actions_remaining: dict[str, list[int]] = {"A": [5], "B": [3]}
+        void_points = {"A": 2, "B": 3}
+        temp_void = {"A": 1, "B": 0}
+        dan_points = {"A": 0, "B": 0}
+        snap = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
+        assert snap["A"].temp_void_points == 1
+        assert snap["B"].temp_void_points == 0
+        assert snap["A"].void_points == 2
+
+    def test_temp_void_spent_before_regular_in_combat(self) -> None:
+        """Integration: Mirumoto SA grants temp, next spend uses temp first."""
+        # Mirumoto defender gets +1 temp void from parry, then spends on wound check
+        a = _make_character("Attacker", fire=4, earth=4, void=3)
+        b = _make_mirumoto("MiruDef", knack_rank=1, parry_rank=2, air=3, earth=3, void=3, water=2)
+
+        log = create_combat_log(
+            ["Attacker", "MiruDef"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "MiruDef": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "MiruDef": [5, 7]}
+        void_points = {"Attacker": 3, "MiruDef": 3}
+        temp_void: dict[str, int] = {"Attacker": 0, "MiruDef": 1}
+
+        # Force an attack that hits, parry that fails, then wound check that spends void
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak, \
+             patch("src.engine.simulation.roll_damage") as mock_dmg, \
+             patch("src.engine.simulation._should_spend_void_on_combat_roll", return_value=0), \
+             patch("src.engine.simulation._should_spend_void_on_wound_check") as mock_wc_decide, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="MiruDef", dice_rolled=[25, 18], dice_kept=[25, 18],
+                total=25, tn=15, success=True, description="Attacker attacks",
+            )
+            mock_rak.return_value = ([8, 5, 3], [8, 5], 13)  # parry fails
+            mock_dmg.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.DAMAGE,
+                total=15, description="15 damage",
+                dice_rolled=[8, 5, 2], dice_kept=[8, 5], dice_pool="5k2",
+            )
+            # Spend 1 void on wound check
+            mock_wc_decide.return_value = 1
+            mock_wc.return_value = (True, 20, [12, 8, 5], [12, 8])
+
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["MiruDef"],
+                "Attacker", "MiruDef", fighters, actions_remaining, void_points,
+                temp_void=temp_void,
+            )
+            # Parry grants +1 temp void (total temp = 2)
+            # Wound check spends 1 void — should come from temp first
+            # So temp_void should be 1 (2 gained - 1 spent), regular void should be 3
+            assert temp_void["MiruDef"] == 1
+            assert void_points["MiruDef"] == 3
+
+
+class TestAttackVoidFix:
+    """Tests that normal attack void spending adds +1k1 (not +1k0)."""
+
+    def test_attack_void_adds_1k1(self) -> None:
+        """When Mirumoto spends void on attack, dice pool shows +1k1 pattern."""
+        a = _make_mirumoto("MiruAtk", knack_rank=1, attack_rank=3, fire=3, earth=3, void=3)
+        b = _make_character("Defender", fire=2, earth=2, air=2, void=2)
+
+        log = create_combat_log(
+            ["MiruAtk", "Defender"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "MiruAtk": {"char": a, "weapon": KATANA},
+            "Defender": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"MiruAtk": [5], "Defender": []}
+        # Enough void that AI decides to spend
+        void_points = {"MiruAtk": 3, "Defender": 2}
+
+        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+             patch("src.engine.simulation._should_spend_void_on_combat_roll") as mock_void_decide, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak, \
+             patch("src.engine.simulation.roll_damage") as mock_dmg, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            from src.models.combat import CombatAction
+            mock_da.return_value = (False, 0)
+            mock_void_decide.return_value = 1  # spend 1 void
+
+            # Base: (3+1) skill + 3 fire = 7 rolled, 3 kept
+            # With +1 void: 8 rolled, 4 kept → 8k4
+            mock_rak.return_value = ([15, 12, 9, 7, 5, 4, 3, 2], [15, 12, 9, 7], 43)
+            mock_dmg.return_value = CombatAction(
+                phase=5, actor="MiruAtk", action_type=ActionType.DAMAGE,
+                total=20, description="damage", dice_rolled=[10, 5], dice_kept=[10, 5],
+                dice_pool="6k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack(
+                log, 5, fighters["MiruAtk"], fighters["Defender"],
+                "MiruAtk", "Defender", fighters, actions_remaining, void_points,
+            )
+            # Check the attack action's dice_pool reflects +1k1
+            attack_actions = [a for a in log.actions if a.action_type == ActionType.ATTACK]
+            assert len(attack_actions) == 1
+            assert attack_actions[0].dice_pool == "8k4"  # 7+1 rolled, 3+1 kept
+
+
+# ===================================================================
+# Step 2b: Temp void display tests
+# ===================================================================
+
+
+class TestTempVoidDisplay:
+    def test_temp_void_annotation_on_parry(self) -> None:
+        """Normal parry by Mirumoto shows '(mirumoto SA: +1 temp void)' in description."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("MiruDef", knack_rank=1, parry_rank=2, air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "MiruDef"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "MiruDef": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "MiruDef": [5, 7]}
+        void_points = {"Attacker": 2, "MiruDef": 1}
+        dan_points: dict[str, int] = {"Attacker": 0, "MiruDef": 0}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="MiruDef", dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=20, tn=15, success=True, description="Attacker attacks",
+            )
+            # Parry fails — still gets temp void annotation
+            mock_rak.return_value = ([8, 5, 3], [8, 5], 13)
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["MiruDef"],
+                "Attacker", "MiruDef", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+            assert len(parry_actions) == 1
+            assert "(mirumoto SA: +1 temp void)" in parry_actions[0].description
+
+    def test_temp_void_in_snapshot_after_parry(self) -> None:
+        """Snapshot after parry reflects the +1 temp void in temp_void_points field."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("MiruDef", knack_rank=1, parry_rank=2, air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "MiruDef"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "MiruDef": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "MiruDef": [5, 7]}
+        void_points = {"Attacker": 2, "MiruDef": 1}
+        dan_points: dict[str, int] = {"Attacker": 0, "MiruDef": 0}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="MiruDef", dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=20, tn=15, success=True, description="Attacker attacks",
+            )
+            # Parry succeeds
+            mock_rak.return_value = ([15, 12, 8], [15, 12, 8], 35)
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["MiruDef"],
+                "Attacker", "MiruDef", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+            assert len(parry_actions) == 1
+            # Regular void stays at 1, temp void is 1
+            assert parry_actions[0].status_after["MiruDef"].void_points == 1
+            assert parry_actions[0].status_after["MiruDef"].temp_void_points == 1
+
+    def test_temp_void_annotation_on_auto_success_parry(self) -> None:
+        """Wave man auto-success parry by Mirumoto defender also shows temp void annotation."""
+        a = _make_waveman("WM", abilities=[(1, 1)], fire=3, earth=3, void=2)
+        b = _make_mirumoto("MiruDef", knack_rank=1, parry_rank=2, air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["WM", "MiruDef"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "MiruDef": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"WM": [5], "MiruDef": [5, 7]}
+        void_points = {"WM": 2, "MiruDef": 1}
+        dan_points: dict[str, int] = {"WM": 0, "MiruDef": 0}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack:
+            from src.models.combat import CombatAction
+            # Attack misses by 3 (total=12, tn=15) → ability 1 adds +5 → 17 >= 15
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[8, 4], dice_kept=[8, 4],
+                total=12, tn=15, success=False,
+                description="WM attacks: 5k2 vs TN 15",
+            )
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["MiruDef"],
+                "WM", "MiruDef", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+            assert len(parry_actions) == 1
+            assert "(mirumoto SA: +1 temp void)" in parry_actions[0].description
+            # Snapshot should reflect +1 temp void in separate field
+            assert parry_actions[0].status_after["MiruDef"].void_points == 1
+            assert parry_actions[0].status_after["MiruDef"].temp_void_points == 1
+
+
+# ===================================================================
+# Step 3: Dan points generation tests
+# ===================================================================
+
+
+class TestDanPointsGeneration:
+    def test_dan_points_generated_at_round_start(self) -> None:
+        """3rd Dan Mirumoto with Attack 4 gets 2*4 = 8 dan points."""
+        a = _make_mirumoto("M3", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        b = _make_character("Samurai", fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+        # First action is initiative; its snapshot should show dan_points=8
+        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE]
+        m3_init = [act for act in init_actions if act.actor == "M3"]
+        assert len(m3_init) >= 1
+        assert m3_init[0].status_after["M3"].dan_points == 8
+
+    def test_dan_points_not_generated_below_3rd_dan(self) -> None:
+        """2nd Dan Mirumoto gets 0 dan points."""
+        a = _make_mirumoto("M2", knack_rank=2, attack_rank=3, fire=3, earth=3, void=3, air=3)
+        b = _make_character("Samurai", fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE]
+        m2_init = [act for act in init_actions if act.actor == "M2"]
+        assert len(m2_init) >= 1
+        assert m2_init[0].status_after["M2"].dan_points == 0
+
+    def test_dan_points_in_snapshot(self) -> None:
+        """FighterStatus.dan_points reflects current total in snapshot."""
+        a = _make_mirumoto("M3", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        b = _make_character("Samurai", fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+        # Samurai should have 0 dan_points
+        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE]
+        assert init_actions[0].status_after["Samurai"].dan_points == 0
+
+
+# ===================================================================
+# Step 4: Phase shift parry tests
+# ===================================================================
+
+
+class TestPhaseShiftParry:
+    def test_phase_shift_enables_parry(self) -> None:
+        """Phase shift uses 3rd Dan points to shift a die and attempt parry."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("M3Def", knack_rank=3, parry_rank=3, attack_rank=4,
+                           air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "M3Def"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "M3Def": {"char": b, "weapon": KATANA},
+        }
+        # Defender has NO action in phase 5 but has die at 7 (cost=2 pts)
+        actions_remaining = {"Attacker": [5], "M3Def": [7, 9]}
+        void_points = {"Attacker": 2, "M3Def": 0}
+        dan_points = {"Attacker": 0, "M3Def": 8}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="M3Def", dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=20, tn=20, success=True, description="Attacker attacks",
+            )
+            mock_rak.return_value = ([15, 12, 8], [15, 12, 8], 35)
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["M3Def"],
+                "Attacker", "M3Def", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+            assert len(parry_actions) >= 1
+            assert "3rd dan" in parry_actions[0].description.lower()
+
+    def test_phase_shift_picks_cheapest_die(self) -> None:
+        """Phase shift picks the lowest die above current phase."""
+        # phase=5, dice=[7, 9] → picks 7 (cost=2) not 9 (cost=4)
+        can_shift, cost, die_phase = _try_phase_shift_parry(
+            phase=5, defender_name="D",
+            actions_remaining={"D": [7, 9]},
+            dan_points={"D": 8},
+            serious_wounds=0, earth_ring=3,
+        )
+        assert can_shift is True
+        assert cost == 2
+        assert die_phase == 7
+
+    def test_phase_shift_fails_when_insufficient_points(self) -> None:
+        """Phase shift can't happen without enough dan points."""
+        can_shift, cost, die_phase = _try_phase_shift_parry(
+            phase=5, defender_name="D",
+            actions_remaining={"D": [9]},  # cost=4
+            dan_points={"D": 1},  # only 1 pt
+            serious_wounds=0, earth_ring=3,
+        )
+        assert can_shift is False
+
+    def test_phase_shift_preferred_over_interrupt(self) -> None:
+        """Phase shift (1 die) is preferred over interrupt (2 dice)."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("M3Def", knack_rank=3, parry_rank=3, attack_rank=4,
+                           air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "M3Def"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "M3Def": {"char": b, "weapon": KATANA},
+        }
+        # No die at phase 5, but has [7, 9] — phase shift costs 2, interrupt costs 2 dice
+        actions_remaining = {"Attacker": [5], "M3Def": [7, 9]}
+        void_points = {"Attacker": 2, "M3Def": 0}
+        dan_points = {"Attacker": 0, "M3Def": 8}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak, \
+             patch("src.engine.simulation._should_interrupt_parry") as mock_int:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="M3Def", dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=20, tn=20, success=True, description="Attacker attacks",
+            )
+            mock_rak.return_value = ([15, 12, 8], [15, 12, 8], 35)
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["M3Def"],
+                "Attacker", "M3Def", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            # Interrupt should NOT have been called — phase shift took priority
+            mock_int.assert_not_called()
+            # Only 1 die consumed (the shifted one), not 2
+            assert len(actions_remaining["M3Def"]) == 1
+
+    def test_phase_shift_annotation_in_description(self) -> None:
+        """Phase shift shows '(3rd dan: shifted from phase X, Y pts)' in description."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("M3Def", knack_rank=3, parry_rank=3, attack_rank=4,
+                           air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "M3Def"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "M3Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "M3Def": [7]}
+        void_points = {"Attacker": 2, "M3Def": 0}
+        dan_points = {"Attacker": 0, "M3Def": 8}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="M3Def", dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=20, tn=20, success=True, description="Attacker attacks",
+            )
+            mock_rak.return_value = ([8, 5, 3], [8, 5], 13)  # Parry fails
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["M3Def"],
+                "Attacker", "M3Def", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+            assert len(parry_actions) == 1
+            assert "3rd dan: shifted from phase 7, 2 pts" in parry_actions[0].description
+
+    def test_phase_shift_consumes_dan_points(self) -> None:
+        """Phase shift reduces dan_points by shift cost."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("M3Def", knack_rank=3, parry_rank=3, attack_rank=4,
+                           air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "M3Def"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "M3Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "M3Def": [7]}
+        void_points = {"Attacker": 2, "M3Def": 0}
+        dan_points = {"Attacker": 0, "M3Def": 8}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak:
+            from src.models.combat import CombatAction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="M3Def", dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=20, tn=20, success=True, description="Attacker attacks",
+            )
+            mock_rak.return_value = ([15, 12, 8], [15, 12, 8], 35)  # Parry succeeds
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["M3Def"],
+                "Attacker", "M3Def", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            # Die 7 shifted to phase 5 costs 2 pts: 8 - 2 = 6
+            assert dan_points["M3Def"] == 6
+
+
+# ===================================================================
+# Step 5: Dan roll bonus tests
+# ===================================================================
+
+
+class TestDanRollBonus:
+    def test_attack_roll_bonus_applied(self) -> None:
+        """Near-miss attack boosted by 3rd Dan points to hit."""
+        a = _make_mirumoto("M3Atk", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        # Defender with Parry 2 → TN = 5 + 5*2 = 15
+        b = _make_character("Def", fire=2, earth=3, void=2)
+
+        log = create_combat_log(
+            ["M3Atk", "Def"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "M3Atk": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"M3Atk": [5], "Def": [3, 7]}
+        void_points = {"M3Atk": 0, "Def": 2}
+        dan_points = {"M3Atk": 8, "Def": 0}
+
+        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+             patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_dmg, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc, \
+             patch("src.engine.simulation._should_interrupt_parry", return_value=False):
+            from src.models.combat import CombatAction
+            mock_da.return_value = (False, 0)
+            # Attack misses by 3: total=12, tn=15 (Def has Parry 2)
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="M3Atk", action_type=ActionType.ATTACK,
+                target="Def", dice_rolled=[8, 4], dice_kept=[8, 4],
+                total=12, tn=15, success=False,
+                description="M3Atk attacks: 9k4 vs TN 15",
+            )
+            mock_dmg.return_value = CombatAction(
+                phase=5, actor="M3Atk", action_type=ActionType.DAMAGE,
+                total=10, description="M3Atk deals 10 damage",
+                dice_rolled=[10], dice_kept=[10], dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 20, [15, 10], [15, 10])
+            _resolve_attack(
+                log, 5, fighters["M3Atk"], fighters["Def"],
+                "M3Atk", "Def", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            attack_actions = [a for a in log.actions if a.action_type == ActionType.ATTACK]
+            assert len(attack_actions) == 1
+            # Deficit 3 → need ceil(3/2)=2 pts → +4 bonus → total=16 >= 15
+            assert attack_actions[0].success is True
+            assert attack_actions[0].total >= 15
+            assert "3rd dan" in attack_actions[0].description.lower()
+
+    def test_parry_roll_bonus_applied(self) -> None:
+        """Near-miss parry boosted by 3rd Dan points."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_mirumoto("M3Def", knack_rank=3, parry_rank=3, attack_rank=4,
+                           air=3, earth=3, void=3)
+
+        log = create_combat_log(
+            ["Attacker", "M3Def"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "M3Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "M3Def": [5, 7]}
+        void_points = {"Attacker": 2, "M3Def": 0}
+        dan_points = {"Attacker": 0, "M3Def": 8}
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak, \
+             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+            from src.models.combat import CombatAction
+            # Attack total=25, parry TN = 25
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Attacker", action_type=ActionType.ATTACK,
+                target="M3Def", dice_rolled=[25, 15], dice_kept=[25, 15],
+                total=25, tn=20, success=True, description="Attacker attacks",
+            )
+            # Parry roll=17, +5 2nd dan = 22 < 25 → short by 3 → need ceil(3/2)=2 pts
+            mock_rak.return_value = ([10, 7, 5, 3], [10, 7], 17)
+            _resolve_attack(
+                log, 5, fighters["Attacker"], fighters["M3Def"],
+                "Attacker", "M3Def", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+            assert len(parry_actions) == 1
+            # 17 + 5 (2nd dan) + 4 (2 pts) = 26 >= 25
+            assert parry_actions[0].success is True
+            assert "3rd dan" in parry_actions[0].description.lower()
+
+    def test_roll_bonus_not_spent_when_already_succeeded(self) -> None:
+        """No dan points spent when roll already passes."""
+        pts = _compute_dan_roll_bonus(
+            current_total=20, tn=15, dan_points_available=8,
+        )
+        assert pts == 0
+
+    def test_roll_bonus_not_spent_when_gap_too_large(self) -> None:
+        """No dan points spent when deficit exceeds threshold."""
+        # deficit=30, points_needed=15 → threshold=ceil(8/2)+2=6 → 15>6 → skip
+        pts = _compute_dan_roll_bonus(
+            current_total=10, tn=40, dan_points_available=8,
+        )
+        assert pts == 0
+
+    def test_roll_bonus_annotation_in_description(self) -> None:
+        """Roll bonus annotation shows '(3rd dan: +N bonus, M pts)'."""
+        a = _make_mirumoto("M3Atk", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        # Defender with Parry 2 → TN = 5 + 5*2 = 15
+        b = _make_character("Def", fire=2, earth=3, void=2)
+
+        log = create_combat_log(
+            ["M3Atk", "Def"],
+            [a.rings.earth.value, b.rings.earth.value],
+        )
+        fighters = {
+            "M3Atk": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"M3Atk": [5], "Def": [3, 7]}
+        void_points = {"M3Atk": 0, "Def": 2}
+        dan_points = {"M3Atk": 8, "Def": 0}
+
+        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+             patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_dmg, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc, \
+             patch("src.engine.simulation._should_interrupt_parry", return_value=False):
+            from src.models.combat import CombatAction
+            mock_da.return_value = (False, 0)
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="M3Atk", action_type=ActionType.ATTACK,
+                target="Def", dice_rolled=[8, 4], dice_kept=[8, 4],
+                total=12, tn=15, success=False,
+                description="M3Atk attacks: 9k4 vs TN 15",
+            )
+            mock_dmg.return_value = CombatAction(
+                phase=5, actor="M3Atk", action_type=ActionType.DAMAGE,
+                total=10, description="M3Atk deals 10 damage",
+                dice_rolled=[10], dice_kept=[10], dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 20, [15, 10], [15, 10])
+            _resolve_attack(
+                log, 5, fighters["M3Atk"], fighters["Def"],
+                "M3Atk", "Def", fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+            )
+            attack_actions = [a for a in log.actions if a.action_type == ActionType.ATTACK]
+            # deficit=3, pts=2 → "+4 bonus, 2 pts"
+            assert "(3rd dan: +4 bonus, 2 pts)" in attack_actions[0].description
+
+    def test_parry_more_generous_than_attack(self) -> None:
+        """Parry threshold is more generous (ceil(avail/2)+3 vs +2)."""
+        # Borderline case: available=8, threshold for attack=ceil(8/2)+2=6
+        # threshold for parry=ceil(8/2)+3=7
+        # deficit=13, pts_needed=7 → attack skips (7>6), parry spends (7<=7)
+        atk_pts = _compute_dan_roll_bonus(
+            current_total=7, tn=20, dan_points_available=8, is_parry=False,
+        )
+        parry_pts = _compute_dan_roll_bonus(
+            current_total=7, tn=20, dan_points_available=8, is_parry=True,
+        )
+        assert atk_pts == 0  # 7 > 6 threshold
+        assert parry_pts == 7  # 7 <= 7 threshold
+
+
+# ===================================================================
+# Step 7: Smoke tests
+# ===================================================================
+
+
+class TestMirumotoThirdDanSmokeTest:
+    def test_3rd_dan_mirumoto_fight(self) -> None:
+        """Two 3rd Dan Mirumoto fight 20 rounds without errors."""
+        a = _make_mirumoto("M3_1", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        b = _make_mirumoto("M3_2", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["M3_1", "M3_2"]
+
+    def test_3rd_dan_mirumoto_vs_waveman(self) -> None:
+        """3rd Dan Mirumoto vs Wave Man completes without errors."""
+        a = _make_mirumoto("M3", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        b = _make_waveman("WM", abilities=[(1, 1), (4, 1), (7, 1)], fire=3, earth=3, void=3)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["M3", "WM"]

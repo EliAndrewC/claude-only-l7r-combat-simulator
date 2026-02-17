@@ -40,22 +40,24 @@ WAVE_MAN_ABILITY_NAMES: dict[int, str] = {
 WAVE_MAN_ABILITY_ORDER: list[int] = [1, 4, 7, 5, 6, 10, 8, 9, 2, 3]
 
 # Combat progression for Wave Man: starts from ring values of 1.
-# Same parry-first philosophy as the samurai default progression.
+# Parry-first philosophy. Skills advance just ahead of rings so that
+# parry is never more than 1 higher than the highest ring value.
 WAVE_MAN_COMBAT_PROGRESSION: list[str] = [
-    # Skills to 3 (parry prioritised, attack enables each raise)
+    # Skills to 2 (max_ring=1, parry can reach 2)
     "parry",
-    "attack", "parry",
-    "attack", "parry",
-    # Skills to 4 (before any ring reaches 4)
     "attack", "parry",
     # Rings first raise (1→2)
     "void", "water", "earth", "fire", "air",
-    # Skills to 5 (before any ring reaches 5)
+    # Skills to 3 (max_ring=2, parry can reach 3)
     "attack", "parry",
     # Rings second raise (2→3)
     "void", "water", "earth", "fire", "air",
+    # Skills to 4 (max_ring=3, parry can reach 4)
+    "attack", "parry",
     # Rings third raise (3→4)
     "void", "water", "earth", "fire", "air",
+    # Skills to 5 (max_ring=4, parry can reach 5)
+    "attack", "parry",
     # Rings fourth raise (4→5)
     "void", "water", "earth", "fire", "air",
     # Attack to 5 (catch up with parry)
@@ -152,6 +154,8 @@ def compute_waveman_stats_from_xp(
             if parry >= 5:
                 continue
             if parry + 1 > attack + 1:
+                continue
+            if parry + 1 > max(ring_values.values()) + 1:
                 continue
             cost = advanced_skill_raise_cost(parry + 1)
             if cost > budget:

@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.models.character import Character, ProfessionAbility
+from src.models.character import Character, ProfessionAbility, RingName, Skill, SkillType
 
 
 class TestProfessionAbilityValidation:
@@ -69,3 +69,36 @@ class TestAbilityRank:
         assert char.ability_rank(4) == 1
         assert char.ability_rank(7) == 1
         assert char.ability_rank(10) == 0
+
+
+class TestDanProperty:
+    def test_dan_no_knacks(self) -> None:
+        """Dan is 0 when character has no school knacks."""
+        char = Character(name="Test")
+        assert char.dan == 0
+
+    def test_dan_with_knacks(self) -> None:
+        """Dan equals minimum knack skill rank."""
+        char = Character(
+            name="Test",
+            school_knacks=["Counterattack", "Double Attack", "Iaijutsu"],
+            skills=[
+                Skill(name="Counterattack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(name="Double Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(name="Iaijutsu", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            ],
+        )
+        assert char.dan == 3
+
+    def test_dan_mixed_ranks(self) -> None:
+        """Dan equals the minimum when knacks have different ranks."""
+        char = Character(
+            name="Test",
+            school_knacks=["Counterattack", "Double Attack", "Iaijutsu"],
+            skills=[
+                Skill(name="Counterattack", rank=4, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(name="Double Attack", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(name="Iaijutsu", rank=5, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            ],
+        )
+        assert char.dan == 2

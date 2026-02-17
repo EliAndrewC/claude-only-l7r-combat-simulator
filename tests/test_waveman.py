@@ -127,19 +127,19 @@ class TestBuildWavemanFromXP:
     def test_zero_xp_progression(self) -> None:
         """0 earned XP, 0% non-combat → 150 budget, rings from 1.
 
-        Skills first: parry1(4) atk1(4) parry2(4) atk2(4) parry3(6) atk3(6)
-        parry4(8) = 36, budget=114. Rings 1→2: 5×10=50, budget=64.
-        atk4(8) parry5(10) = 18, budget=46. Rings 2→3: void3(15) water3(15)
-        earth3(15)=45, budget=1. fire3(15)>1 skip. air3(15)>1 skip.
+        Skills to 2: parry1(4) atk1(4) parry2(4) = 12, budget=138.
+        Rings 1→2: 5×10=50, budget=88.
+        Skills: atk2(4) parry3(6) = 10, budget=78.
+        Rings 2→3: 5×15=75, budget=3. No more budget.
         """
         char = build_waveman_from_xp(earned_xp=0, non_combat_pct=0.0)
         assert char.rings.void.value == 3
         assert char.rings.water.value == 3
         assert char.rings.earth.value == 3
-        assert char.rings.fire.value == 2
-        assert char.rings.air.value == 2
-        assert char.get_skill("Attack").rank == 4
-        assert char.get_skill("Parry").rank == 5
+        assert char.rings.fire.value == 3
+        assert char.rings.air.value == 3
+        assert char.get_skill("Attack").rank == 2
+        assert char.get_skill("Parry").rank == 3
 
     def test_parry_never_exceeds_attack_plus_one(self) -> None:
         """Parry constraint holds for Wave Man."""
@@ -147,6 +147,16 @@ class TestBuildWavemanFromXP:
         atk = char.get_skill("Attack").rank
         parry = char.get_skill("Parry").rank
         assert parry <= atk + 1
+
+    def test_parry_never_exceeds_max_ring_plus_one(self) -> None:
+        """Wave Man parry is no more than 1 higher than the highest ring."""
+        for xp in (0, 50, 100, 150, 200, 250, 300, 350):
+            for nc in (0.0, 0.10, 0.20, 0.30, 0.50):
+                stats = compute_waveman_stats_from_xp(earned_xp=xp, non_combat_pct=nc)
+                max_ring = max(stats.ring_values.values())
+                assert stats.parry <= max_ring + 1, (
+                    f"At {xp} XP, {nc*100}% NC: parry={stats.parry} > max_ring({max_ring})+1"
+                )
 
 
 class TestComputeWavemanStats:

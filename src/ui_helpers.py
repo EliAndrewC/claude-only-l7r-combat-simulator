@@ -12,7 +12,7 @@ from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
 from src.models.weapon import Weapon
 
 # Annotations worth surfacing from action descriptions.
-_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man")
+_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man", "mirumoto", "3rd dan")
 
 
 def _md_to_html(text: str) -> str:
@@ -68,7 +68,7 @@ def _group_action_sequences(
     current: list[CombatAction] = []
 
     for action in actions:
-        if action.action_type == ActionType.ATTACK:
+        if action.action_type in (ActionType.ATTACK, ActionType.DOUBLE_ATTACK):
             if current:
                 sequences.append(current)
             current = [action]
@@ -195,7 +195,8 @@ def render_round_log(log: CombatLog) -> None:
 
 _ACTION_ICONS = {
     ActionType.INITIATIVE: "🎲",
-    ActionType.ATTACK: "⚔️",
+    ActionType.ATTACK: "🗡️",
+    ActionType.DOUBLE_ATTACK: "⚔️",
     ActionType.PARRY: "🛡️",
     ActionType.INTERRUPT: "🛡️",
     ActionType.DAMAGE: "💥",
@@ -203,9 +204,54 @@ _ACTION_ICONS = {
 }
 
 
+def _wound_check_icon(action: CombatAction) -> str:
+    """Return the icon(s) for a wound check action based on outcome.
+
+    - Passed (light wounds kept): 🖤
+    - Failed or deliberately converted: 💔 per serious wound taken
+    """
+    if action.success and "converted" not in action.description:
+        return "🖤"
+    if action.success:
+        # Deliberate conversion: always 1 serious wound
+        return "💔"
+    # Failed: 1 + overflow serious wounds from the roll
+    serious = 1 + max(0, (action.tn - action.total) // 10)
+    return "💔" * serious
+
+
+def _parry_icon(action: CombatAction) -> str:
+    """Return the icon for a parry or interrupt action.
+
+    - Successful: 🛡️
+    - Failed: 🛡️💢 (shield struck/broken through)
+    """
+    if action.success:
+        return "🛡️"
+    return "🛡️💢"
+
+
+def _damage_icon(action: CombatAction) -> str:
+    """Return the icon for a damage action.
+
+    Shows 💔 for each automatic serious wound from double attack,
+    followed by the normal 💥 damage icon.
+    """
+    if "double attack:" in action.description:
+        return "💔💥"
+    return "💥"
+
+
 def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
     """Render a single combat action, left-aligned for Fighter 1, right for Fighter 2."""
-    icon = _ACTION_ICONS.get(action.action_type, "▪️")
+    if action.action_type == ActionType.WOUND_CHECK:
+        icon = _wound_check_icon(action)
+    elif action.action_type == ActionType.DAMAGE:
+        icon = _damage_icon(action)
+    elif action.action_type in (ActionType.PARRY, ActionType.INTERRUPT):
+        icon = _parry_icon(action)
+    else:
+        icon = _ACTION_ICONS.get(action.action_type, "▪️")
 
     phase_str = f"Phase {action.phase}" if action.phase > 0 else "Initiative"
 
@@ -275,12 +321,17 @@ def _format_fighter_status(name: str, status: FighterStatus) -> str:
         actions_display = f"Actions: phases {phases_str}"
     else:
         actions_display = "Actions: none"
+    void_str = f"Void {status.void_points}/{status.void_points_max}"
     parts = [
         f"Light {status.light_wounds}",
         f"Serious {status.serious_wounds}",
-        f"Void {status.void_points}/{status.void_points_max}",
+        void_str,
         actions_display,
     ]
+    if status.temp_void_points > 0:
+        parts.append(f"Temp Void {status.temp_void_points}")
+    if status.dan_points > 0:
+        parts.append(f"3rd Dan points: {status.dan_points}")
     if status.is_mortally_wounded:
         parts.append("**MORTAL**")
     elif status.is_crippled:

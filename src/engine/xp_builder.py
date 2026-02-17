@@ -20,6 +20,7 @@ class ComputedStats:
     ring_values: dict[str, int] = field(default_factory=dict)
     attack: int = 0
     parry: int = 0
+    knack_ranks: dict[str, int] = field(default_factory=dict)
 
 
 def ring_raise_cost(new_value: int) -> int:

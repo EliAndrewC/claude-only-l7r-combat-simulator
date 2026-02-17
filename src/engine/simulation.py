@@ -191,6 +191,121 @@ def _should_convert_light_to_serious(
     return light_wounds > threshold
 
 
+def _should_spend_void_on_combat_roll(
+    rolled: int,
+    kept: int,
+    tn: int,
+    void_available: int,
+    max_spend: int,
+    fifth_dan_bonus: int = 0,
+) -> int:
+    """Decide how many void points to spend on an attack or parry roll.
+
+    Each void spent adds 1k1 (about +5.5) plus the fifth_dan_bonus to the roll.
+    Only spends if it meaningfully increases the chance of success.
+    Reserves at least 1 void point for wound checks.
+
+    Args:
+        rolled: Number of dice rolled.
+        kept: Number of dice kept.
+        tn: Target number to meet or exceed.
+        void_available: Remaining void points.
+        max_spend: Maximum void spendable on a single action.
+        fifth_dan_bonus: Flat bonus per void spent (0 or 10 for 5th Dan Mirumoto).
+
+    Returns:
+        Number of void points to spend (0 to min(void_available-1, max_spend)).
+    """
+    if void_available <= 1 or tn <= 0:
+        return 0
+
+    # Reserve 1 void for wound checks
+    usable = min(void_available - 1, max_spend)
+    if usable <= 0:
+        return 0
+
+    # Estimate expected roll: kept dice * 5.5 average
+    expected = kept * 5.5
+    value_per_void = 5.5 + fifth_dan_bonus  # 1k1 + bonus
+
+    # Only spend if expected roll is below TN and void spending bridges the gap
+    if expected >= tn:
+        return 0
+
+    deficit = tn - expected
+    needed = max(1, int(deficit / value_per_void + 0.5))
+    return min(needed, usable)
+
+
+def _should_use_double_attack(
+    double_attack_rank: int,
+    attack_skill: int,
+    fire_ring: int,
+    defender_parry: int,
+    void_available: int,
+    max_void_spend: int,
+    dan: int,
+    is_crippled: bool,
+) -> tuple[bool, int]:
+    """Decide whether to use Double Attack and how much void to spend.
+
+    Double Attack uses Double Attack skill + Fire instead of Attack + Fire,
+    but raises TN by 20. The benefit: extra damage dice based on base TN
+    (not raised TN) plus 1 serious wound.
+
+    Args:
+        double_attack_rank: Character's Double Attack knack rank.
+        attack_skill: Character's Attack skill rank.
+        fire_ring: Character's Fire ring value.
+        defender_parry: Defender's parry skill rank.
+        void_available: Remaining void points.
+        max_void_spend: Maximum void per action.
+        dan: Character's dan level (for technique bonuses).
+        is_crippled: Whether the attacker is crippled.
+
+    Returns:
+        Tuple of (use_double_attack, void_to_spend).
+    """
+    if double_attack_rank <= 0 or is_crippled:
+        return False, 0
+
+    base_tn = 5 + 5 * defender_parry
+    da_tn = base_tn + 20
+    fifth_dan_bonus = 10 if dan >= 5 else 0
+    first_dan_bonus = 1 if dan >= 1 else 0
+
+    # Normal attack expected value
+    normal_rolled = attack_skill + fire_ring + first_dan_bonus
+    normal_kept = fire_ring
+    normal_expected = normal_kept * 5.5
+
+    # Double attack expected value
+    da_rolled = double_attack_rank + fire_ring + first_dan_bonus
+    da_kept = fire_ring
+    da_expected = da_kept * 5.5
+
+    # Only consider DA if it has a reasonable chance of hitting
+    # Account for void spending
+    usable_void = min(void_available - 1, max_void_spend) if void_available > 1 else 0
+    void_value_per = 5.5 + fifth_dan_bonus
+    max_void_boost = usable_void * void_value_per
+
+    if da_expected + max_void_boost < da_tn * 0.7:
+        return False, 0
+
+    # Use DA when the normal attack is likely to hit easily (extra dice benefit)
+    # and the DA also has reasonable odds
+    if normal_expected >= base_tn and da_expected + max_void_boost >= da_tn * 0.85:
+        # Determine void to spend on DA
+        if da_expected >= da_tn:
+            return True, 0
+        deficit = da_tn - da_expected
+        void_spend = min(usable_void, max(1, int(deficit / void_value_per + 0.5)))
+        return True, void_spend
+
+    return False, 0
+
+
 def _should_predeclare_parry(
     defender_parry_rank: int,
     air_ring: int,
@@ -299,6 +414,55 @@ def _tiebreak_key(
     return (phase, tuple(padded), -void_ring, random.random())
 
 
+def _spend_void(
+    void_points: dict[str, int],
+    temp_void: dict[str, int],
+    name: str,
+    amount: int,
+) -> tuple[int, int]:
+    """Spend void points, consuming temp void first.
+
+    Returns:
+        Tuple of (from_temp, from_regular).
+    """
+    from_temp = min(amount, temp_void.get(name, 0))
+    if from_temp > 0:
+        temp_void[name] -= from_temp
+    remainder = amount - from_temp
+    from_regular = 0
+    if remainder > 0:
+        from_regular = min(remainder, void_points.get(name, 0))
+        void_points[name] -= from_regular
+    return from_temp, from_regular
+
+
+def _void_spent_label(from_temp: int, from_regular: int) -> str:
+    """Format a human-readable label for void spending.
+
+    Examples:
+        (1, 0) -> "1 temp void spent"
+        (0, 2) -> "2 void spent"
+        (1, 1) -> "2 void spent (1 temp)"
+    """
+    total = from_temp + from_regular
+    if total == 0:
+        return ""
+    if from_regular == 0:
+        return f"{total} temp void spent"
+    if from_temp == 0:
+        return f"{total} void spent"
+    return f"{total} void spent ({from_temp} temp)"
+
+
+def _total_void(
+    void_points: dict[str, int],
+    temp_void: dict[str, int],
+    name: str,
+) -> int:
+    """Total available void = regular + temp."""
+    return void_points.get(name, 0) + temp_void.get(name, 0)
+
+
 def simulate_combat(
     char_a: Character,
     char_b: Character,
@@ -333,8 +497,25 @@ def simulate_combat(
         char_b.name: char_b.void_points_max,
     }
 
+    temp_void: dict[str, int] = {char_a.name: 0, char_b.name: 0}
+
+    dan_points: dict[str, int] = {
+        char_a.name: 0,
+        char_b.name: 0,
+    }
+
     for round_num in range(1, max_rounds + 1):
         log.round_number = round_num
+
+        # --- Dan Points Generation (3rd Dan+ Mirumoto) ---
+        for name, info in fighters.items():
+            char: Character = info["char"]
+            if char.school == "Mirumoto Bushi" and char.dan >= 3:
+                atk_skill = char.get_skill("Attack")
+                atk_rank = atk_skill.rank if atk_skill else 0
+                dan_points[name] = 2 * atk_rank
+            else:
+                dan_points[name] = 0
 
         # --- Initiative Phase ---
         # Ability 6: extra unkept die on initiative
@@ -346,9 +527,9 @@ def simulate_combat(
             char_b.name: sorted(init_b.dice_kept),
         }
 
-        init_a.status_after = _snapshot_status(log, fighters, actions_remaining, void_points)
+        init_a.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
         log.add_action(init_a)
-        init_b.status_after = _snapshot_status(log, fighters, actions_remaining, void_points)
+        init_b.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
         log.add_action(init_b)
 
         # Build action schedule: list of (phase, die_value, character_name)
@@ -376,6 +557,8 @@ def simulate_combat(
             _resolve_attack(
                 log, phase, attacker_info, defender_info, attacker_name, defender_name,
                 fighters, actions_remaining, void_points,
+                dan_points=dan_points,
+                temp_void=temp_void,
             )
 
         # Check for combat end
@@ -394,6 +577,8 @@ def _snapshot_status(
     fighters: dict[str, dict],
     actions_remaining: dict[str, list[int]],
     void_points: dict[str, int],
+    dan_points: dict[str, int] | None = None,
+    temp_void: dict[str, int] | None = None,
 ) -> dict[str, FighterStatus]:
     """Build a snapshot of each fighter's current state."""
     result: dict[str, FighterStatus] = {}
@@ -408,6 +593,8 @@ def _snapshot_status(
             actions_remaining=list(actions_remaining.get(name, [])),
             void_points=void_points.get(name, 0),
             void_points_max=char.void_points_max,
+            temp_void_points=temp_void.get(name, 0) if temp_void else 0,
+            dan_points=dan_points.get(name, 0) if dan_points else 0,
         )
     return result
 
@@ -464,6 +651,88 @@ def _apply_ability4_rounding(total: int, rank: int) -> tuple[int, str]:
     return total, annotation
 
 
+def _try_phase_shift_parry(
+    phase: int,
+    defender_name: str,
+    actions_remaining: dict[str, list[int]],
+    dan_points: dict[str, int],
+    serious_wounds: int,
+    earth_ring: int,
+) -> tuple[bool, int, int]:
+    """Try to phase-shift a die to enable a parry using 3rd Dan points.
+
+    Args:
+        phase: Current combat phase.
+        defender_name: Defender's name key.
+        actions_remaining: All characters' remaining action dice.
+        dan_points: All characters' current dan points.
+        serious_wounds: Defender's current serious wounds.
+        earth_ring: Defender's Earth ring.
+
+    Returns:
+        Tuple of (can_shift, shift_cost, die_phase). If can_shift is False,
+        the other values are 0.
+    """
+    available = dan_points.get(defender_name, 0)
+    if available <= 0:
+        return False, 0, 0
+
+    # Find the cheapest die above the current phase
+    dice_above = sorted(d for d in actions_remaining.get(defender_name, []) if d > phase)
+    if not dice_above:
+        return False, 0, 0
+
+    best_die = dice_above[0]
+    cost = best_die - phase
+
+    # Spending threshold: willing to spend up to 4 pts normally, up to 6 if near cripple
+    wounds_to_cripple = earth_ring - serious_wounds
+    max_spend = 6 if wounds_to_cripple <= 1 else 4
+
+    if cost > available or cost > max_spend:
+        return False, 0, 0
+
+    return True, cost, best_die
+
+
+def _compute_dan_roll_bonus(
+    current_total: int,
+    tn: int,
+    dan_points_available: int,
+    is_parry: bool = False,
+) -> int:
+    """Compute how many 3rd Dan points to spend for a post-roll +2/point bonus.
+
+    Only spends if the bonus would make the roll succeed. Uses a threshold
+    to avoid overspending on marginal rolls.
+
+    Args:
+        current_total: Current roll total (including other bonuses).
+        tn: Target number to meet or exceed.
+        dan_points_available: Remaining dan points.
+        is_parry: If True, use a more generous threshold.
+
+    Returns:
+        Number of points to spend (0 if not worth it).
+    """
+    if dan_points_available <= 0:
+        return 0
+
+    deficit = tn - current_total
+    if deficit <= 0:
+        return 0
+
+    points_needed = math.ceil(deficit / 2)
+
+    # Threshold: ceil(available/2) + 2 for attack, + 3 for parry
+    threshold = math.ceil(dan_points_available / 2) + (3 if is_parry else 2)
+
+    if points_needed > threshold or points_needed > dan_points_available:
+        return 0
+
+    return points_needed
+
+
 def _resolve_attack(
     log: CombatLog,
     phase: int,
@@ -474,8 +743,15 @@ def _resolve_attack(
     fighters: dict[str, dict],
     actions_remaining: dict[str, list[int]],
     void_points: dict[str, int],
+    dan_points: dict[str, int] | None = None,
+    temp_void: dict[str, int] | None = None,
 ) -> None:
     """Resolve a single attack action in a phase."""
+    if dan_points is None:
+        dan_points = {attacker_name: 0, defender_name: 0}
+    if temp_void is None:
+        temp_void = {attacker_name: 0, defender_name: 0}
+
     attacker: Character = attacker_info["char"]
     defender: Character = defender_info["char"]
     weapon: Weapon = attacker_info["weapon"]
@@ -497,8 +773,31 @@ def _resolve_attack(
     attacker_crippled = log.wounds[attacker_name].is_crippled
     attack_explode = not attacker_crippled
 
+    # Mirumoto school technique detection
+    atk_is_mirumoto = attacker.school == "Mirumoto Bushi"
+    def_is_mirumoto = defender.school == "Mirumoto Bushi"
+    atk_dan = attacker.dan if atk_is_mirumoto else 0
+    def_dan = defender.dan if def_is_mirumoto else 0
+
     # Calculate TN and roll attack
     tn = calculate_attack_tn(def_parry_rank)
+    base_tn = tn  # Save for double attack extra dice calculation
+
+    # --- Double Attack decision (Mirumoto only) ---
+    is_double_attack = False
+    da_void_spend = 0
+    da_skill = attacker.get_skill("Double Attack")
+    da_rank = da_skill.rank if da_skill else 0
+
+    if atk_is_mirumoto and da_rank > 0 and not attacker_crippled:
+        is_double_attack, da_void_spend = _should_use_double_attack(
+            da_rank, atk_rank, attacker.rings.fire.value,
+            def_parry_rank, _total_void(void_points, temp_void, attacker_name),
+            attacker.rings.lowest(), atk_dan, attacker_crippled,
+        )
+
+    if is_double_attack:
+        tn += 20
 
     # --- Parry pre-declaration (feature 4) ---
     # Only regular parries (defender has action in this phase) can be pre-declared.
@@ -517,9 +816,99 @@ def _resolve_attack(
         actions_remaining[defender_name].remove(phase)
 
     # --- Roll attack ---
-    attack_action = roll_attack(attacker, atk_rank, RingName.FIRE, tn, explode=attack_explode)
-    attack_action.phase = phase
-    attack_action.target = defender_name
+    # First Dan: +1 rolled die on attack
+    effective_atk_rank = atk_rank
+    if atk_is_mirumoto and atk_dan >= 1:
+        effective_atk_rank += 1
+
+    if is_double_attack:
+        # Double attack uses Double Attack skill + Fire (not Attack skill)
+        da_rolled = da_rank + attacker.rings.fire.value
+        if atk_dan >= 1:
+            da_rolled += 1  # First Dan bonus
+        da_kept = attacker.rings.fire.value
+
+        # Apply void spending on double attack
+        da_void_label = ""
+        if da_void_spend > 0 and _total_void(void_points, temp_void, attacker_name) >= da_void_spend:
+            da_from_temp, da_from_reg = _spend_void(void_points, temp_void, attacker_name, da_void_spend)
+            da_void_label = _void_spent_label(da_from_temp, da_from_reg)
+            da_rolled += da_void_spend
+            da_kept += da_void_spend
+
+        all_dice, kept_dice, total = roll_and_keep(da_rolled, da_kept, explode=attack_explode)
+        # Fifth Dan: +10 per void spent
+        fifth_dan_combat_bonus = 0
+        if atk_dan >= 5 and da_void_spend > 0:
+            fifth_dan_combat_bonus = 10 * da_void_spend
+            total += fifth_dan_combat_bonus
+
+        success = total >= tn
+        void_note = f" ({da_void_label})" if da_void_label else ""
+        fifth_note = f" (mirumoto: +{fifth_dan_combat_bonus} 5th Dan)" if fifth_dan_combat_bonus > 0 else ""
+        attack_action = CombatAction(
+            phase=phase,
+            actor=attacker_name,
+            action_type=ActionType.DOUBLE_ATTACK,
+            target=defender_name,
+            dice_rolled=all_dice,
+            dice_kept=kept_dice,
+            total=total,
+            tn=tn,
+            success=success,
+            description=f"{attacker_name} double attacks: {_format_pool_with_overflow(da_rolled, da_kept)} vs TN {tn}{void_note}{fifth_note}",
+            dice_pool=_format_pool_with_overflow(da_rolled, da_kept),
+        )
+    else:
+        # Normal attack: void spending on combat roll (Mirumoto)
+        atk_void_spend = 0
+        atk_void_label = ""
+        if atk_is_mirumoto and not attacker_crippled:
+            fifth_dan_bonus = 10 if atk_dan >= 5 else 0
+            atk_void_spend = _should_spend_void_on_combat_roll(
+                effective_atk_rank + attacker.rings.fire.value,
+                attacker.rings.fire.value,
+                tn,
+                _total_void(void_points, temp_void, attacker_name),
+                attacker.rings.lowest(),
+                fifth_dan_bonus=fifth_dan_bonus,
+            )
+            if atk_void_spend > 0 and _total_void(void_points, temp_void, attacker_name) >= atk_void_spend:
+                atk_from_temp, atk_from_reg = _spend_void(void_points, temp_void, attacker_name, atk_void_spend)
+                atk_void_label = _void_spent_label(atk_from_temp, atk_from_reg)
+
+        if atk_void_spend > 0:
+            # Inline roll_and_keep so void adds +1k1 (not +1k0 via roll_attack)
+            atk_rolled = effective_atk_rank + attacker.rings.fire.value + atk_void_spend
+            atk_kept = attacker.rings.fire.value + atk_void_spend
+            all_dice, kept_dice, total = roll_and_keep(atk_rolled, atk_kept, explode=attack_explode)
+
+            # Fifth Dan: +10 per void spent on attack
+            fifth_dan_combat_bonus = 0
+            if atk_dan >= 5:
+                fifth_dan_combat_bonus = 10 * atk_void_spend
+                total += fifth_dan_combat_bonus
+
+            success = total >= tn
+            void_note = f" ({atk_void_label})"
+            fifth_note = f" (mirumoto: +{fifth_dan_combat_bonus} 5th Dan)" if fifth_dan_combat_bonus > 0 else ""
+            attack_action = CombatAction(
+                phase=phase,
+                actor=attacker_name,
+                action_type=ActionType.ATTACK,
+                target=defender_name,
+                dice_rolled=all_dice,
+                dice_kept=kept_dice,
+                total=total,
+                tn=tn,
+                success=success,
+                description=f"{attacker_name} attacks: {_format_pool_with_overflow(atk_rolled, atk_kept)} vs TN {tn}{void_note}{fifth_note}",
+                dice_pool=_format_pool_with_overflow(atk_rolled, atk_kept),
+            )
+        else:
+            attack_action = roll_attack(attacker, effective_atk_rank, RingName.FIRE, tn, explode=attack_explode)
+            attack_action.phase = phase
+            attack_action.target = defender_name
 
     # Ability 5: Free crippled reroll on attack (before void reroll)
     if attacker_crippled and not attack_action.success:
@@ -537,16 +926,17 @@ def _resolve_attack(
     if attacker_crippled and not attack_action.success:
         has_tens = any(d == 10 for d in attack_action.dice_rolled)
         max_void_spend = attacker.rings.lowest()
-        if has_tens and void_points.get(attacker_name, 0) > 0 and max_void_spend > 0:
+        if has_tens and _total_void(void_points, temp_void, attacker_name) > 0 and max_void_spend > 0:
             new_all, new_kept, new_total = reroll_tens(
                 attack_action.dice_rolled, len(attack_action.dice_kept),
             )
-            void_points[attacker_name] -= 1
+            cr_from_temp, cr_from_reg = _spend_void(void_points, temp_void, attacker_name, 1)
+            cr_label = "temp void" if cr_from_temp else "void"
             attack_action.dice_rolled = new_all
             attack_action.dice_kept = new_kept
             attack_action.total = new_total
             attack_action.success = new_total >= tn
-            attack_action.description += " (void: rerolled 10s)"
+            attack_action.description += f" ({cr_label}: rerolled 10s)"
 
     # Ability 1: Attack reroll — if attack misses, add 5 * rank
     parry_auto_succeeds = False
@@ -559,7 +949,18 @@ def _resolve_attack(
             parry_auto_succeeds = True
             attack_action.description += f" (wave man: +{5 * ab1_rank} free raise)"
 
-    attack_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points)
+    # 3rd Dan Mirumoto: post-roll +2 per point on attack
+    if atk_is_mirumoto and atk_dan >= 3 and not attack_action.success:
+        dan_bonus_pts = _compute_dan_roll_bonus(
+            attack_action.total, tn, dan_points.get(attacker_name, 0),
+        )
+        if dan_bonus_pts > 0:
+            attack_action.total += dan_bonus_pts * 2
+            attack_action.success = attack_action.total >= tn
+            dan_points[attacker_name] -= dan_bonus_pts
+            attack_action.description += f" (3rd dan: +{dan_bonus_pts * 2} bonus, {dan_bonus_pts} pts)"
+
+    attack_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
     log.add_action(attack_action)
 
     # Attack missed — dice already consumed by pre-declaration (if any),
@@ -568,10 +969,13 @@ def _resolve_attack(
         return
 
     # Annotate attack hit with expected damage pool (assuming no parry)
-    no_parry_extra = max(0, (attack_action.total - tn) // 5)
+    # For double attack, use base_tn (before +20) for extra dice calculation
+    extra_tn = base_tn if is_double_attack else tn
+    no_parry_extra = max(0, (attack_action.total - extra_tn) // 5)
     raw_rolled = weapon.rolled + attacker.rings.fire.value + no_parry_extra
     pool_display = _format_pool_with_overflow(raw_rolled, weapon.kept)
-    attack_action.description += f" — damage will be {pool_display}"
+    da_wound_note = " plus 1 automatic serious wound" if is_double_attack else ""
+    attack_action.description += f" — damage will be {pool_display}{da_wound_note}"
 
     # --- Defender attempts parry ---
     parry_attempted = False
@@ -599,7 +1003,11 @@ def _resolve_attack(
             description=f"{defender_name} parries: auto-success (wave man free raise)",
             dice_pool="",
         )
-        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points)
+        # Mirumoto special ability: temp void on parry (even auto-success)
+        if def_is_mirumoto:
+            temp_void[defender_name] = temp_void.get(defender_name, 0) + 1
+            parry_action.description += " (mirumoto SA: +1 temp void)"
+        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
         log.add_action(parry_action)
         return
 
@@ -608,9 +1016,24 @@ def _resolve_attack(
 
     # Determine if defender can parry
     can_parry = False
+    is_phase_shift = False
+    phase_shift_die = 0
+    phase_shift_cost = 0
     if has_action_in_phase and def_parry_rank > 0:
         can_parry = True
-    elif (
+    elif def_is_mirumoto and def_dan >= 3 and def_parry_rank > 0 and not has_action_in_phase:
+        # 3rd Dan phase shift: spend points to shift a die to this phase
+        can_shift, shift_cost, shift_die = _try_phase_shift_parry(
+            phase, defender_name, actions_remaining, dan_points,
+            log.wounds[defender_name].serious_wounds,
+            log.wounds[defender_name].earth_ring,
+        )
+        if can_shift:
+            can_parry = True
+            is_phase_shift = True
+            phase_shift_die = shift_die
+            phase_shift_cost = shift_cost
+    if not can_parry and (
         not has_action_in_phase
         and len(actions_remaining[defender_name]) >= 2
         and def_parry_rank > 0
@@ -633,7 +1056,11 @@ def _resolve_attack(
         parry_attempted = True
 
         # Consume dice for the parry
-        if is_interrupt:
+        if is_phase_shift:
+            # Phase shift: consume the shifted die and spend dan points
+            actions_remaining[defender_name].remove(phase_shift_die)
+            dan_points[defender_name] -= phase_shift_cost
+        elif is_interrupt:
             # Interrupts always consume 2 dice (never pre-declared)
             remaining = sorted(actions_remaining[defender_name], reverse=True)
             for die in remaining[:2]:
@@ -646,6 +1073,10 @@ def _resolve_attack(
         parry_rolled = def_parry_rank + air_value
         parry_kept = air_value
 
+        # First Dan Mirumoto defender: +1 rolled die on parry
+        if def_is_mirumoto and def_dan >= 1:
+            parry_rolled += 1
+
         # Feature 1: Crippled disables exploding 10s on parry rolls
         defender_crippled = log.wounds[defender_name].is_crippled
         parry_explode = not defender_crippled
@@ -656,9 +1087,38 @@ def _resolve_attack(
         parry_bonus = 5 if (predeclared and not is_interrupt) else 0
         parry_bonus_note = " (pre-declared, +5 bonus)" if (predeclared and not is_interrupt) else ""
 
+        # Second Dan Mirumoto defender: free raise (+5) on parry
+        if def_is_mirumoto and def_dan >= 2:
+            parry_bonus += 5
+            parry_bonus_note += " (mirumoto: free raise +5)"
+
+        # Mirumoto defender: void spending on parry
+        def_parry_void_spend = 0
+        def_parry_void_label = ""
+        if def_is_mirumoto and not defender_crippled:
+            fifth_dan_bonus = 10 if def_dan >= 5 else 0
+            def_parry_void_spend = _should_spend_void_on_combat_roll(
+                parry_rolled, parry_kept, parry_tn - parry_bonus,
+                _total_void(void_points, temp_void, defender_name),
+                defender.rings.lowest(),
+                fifth_dan_bonus=fifth_dan_bonus,
+            )
+            if def_parry_void_spend > 0 and _total_void(void_points, temp_void, defender_name) >= def_parry_void_spend:
+                pv_from_temp, pv_from_reg = _spend_void(void_points, temp_void, defender_name, def_parry_void_spend)
+                def_parry_void_label = _void_spent_label(pv_from_temp, pv_from_reg)
+                parry_rolled += def_parry_void_spend
+                parry_kept += def_parry_void_spend
+
         all_dice, kept_dice, parry_total = roll_and_keep(
             parry_rolled, parry_kept, explode=parry_explode,
         )
+
+        # Fifth Dan Mirumoto defender: +10 per void on parry
+        if def_is_mirumoto and def_dan >= 5 and def_parry_void_spend > 0:
+            parry_total += 10 * def_parry_void_spend
+            parry_bonus_note += f" (mirumoto: +{10 * def_parry_void_spend} 5th Dan)"
+        elif def_parry_void_label:
+            parry_bonus_note += f" ({def_parry_void_label})"
 
         # Ability 5: Free crippled reroll on parry
         if defender_crippled:
@@ -671,16 +1131,30 @@ def _resolve_attack(
         if defender_crippled and (parry_total + parry_bonus) < parry_tn:
             has_tens = any(d == 10 for d in all_dice)
             max_void_spend = defender.rings.lowest()
-            if has_tens and void_points.get(defender_name, 0) > 0 and max_void_spend > 0:
+            if has_tens and _total_void(void_points, temp_void, defender_name) > 0 and max_void_spend > 0:
                 all_dice, kept_dice, parry_total = reroll_tens(all_dice, parry_kept)
-                void_points[defender_name] -= 1
-                parry_bonus_note += " (void: rerolled 10s)"
+                pcr_from_temp, pcr_from_reg = _spend_void(void_points, temp_void, defender_name, 1)
+                pcr_label = "temp void" if pcr_from_temp else "void"
+                parry_bonus_note += f" ({pcr_label}: rerolled 10s)"
 
         effective_parry_total = parry_total + parry_bonus
+
+        # 3rd Dan Mirumoto: post-roll +2 per point on parry
+        if def_is_mirumoto and def_dan >= 3 and effective_parry_total < parry_tn:
+            dan_parry_pts = _compute_dan_roll_bonus(
+                effective_parry_total, parry_tn, dan_points.get(defender_name, 0),
+                is_parry=True,
+            )
+            if dan_parry_pts > 0:
+                effective_parry_total += dan_parry_pts * 2
+                dan_points[defender_name] -= dan_parry_pts
+                parry_bonus_note += f" (3rd dan: +{dan_parry_pts * 2} bonus, {dan_parry_pts} pts)"
+
         parry_succeeded = effective_parry_total >= parry_tn
 
         action_type = ActionType.INTERRUPT if is_interrupt else ActionType.PARRY
         interrupt_note = " (interrupt)" if is_interrupt else ""
+        phase_shift_note = f" (3rd dan: shifted from phase {phase_shift_die}, {phase_shift_cost} pts)" if is_phase_shift else ""
         ab2_note = f" (wave man: parry TN +{ab2_bonus})" if ab2_bonus > 0 else ""
         parry_pool = f"{parry_rolled}k{parry_kept} + 5" if predeclared else f"{parry_rolled}k{parry_kept}"
         parry_action = CombatAction(
@@ -695,32 +1169,46 @@ def _resolve_attack(
             success=parry_succeeded,
             description=(
                 f"{defender_name} parries: {parry_rolled}k{parry_kept} "
-                f"vs TN {parry_tn}{ab2_note}{parry_bonus_note}{interrupt_note}"
+                f"vs TN {parry_tn}{ab2_note}{parry_bonus_note}{phase_shift_note}{interrupt_note}"
             ),
             dice_pool=parry_pool,
         )
-        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points)
+        # Mirumoto special ability: temp void on parry attempt (success or fail)
+        if def_is_mirumoto:
+            temp_void[defender_name] = temp_void.get(defender_name, 0) + 1
+            parry_action.description += " (mirumoto SA: +1 temp void)"
+        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
         log.add_action(parry_action)
 
         if parry_succeeded:
             return
 
         # Failed parry: reduce extra dice by defender's parry rank (not all)
+        # Fourth Dan Mirumoto attacker: subtract only half parry rank
         if not parry_succeeded:
-            all_extra = max(0, (attack_action.total - tn) // 5)
+            all_extra = max(0, (attack_action.total - (base_tn if is_double_attack else tn)) // 5)
+            parry_reduction = def_parry_rank
+            if atk_is_mirumoto and atk_dan >= 4:
+                parry_reduction = def_parry_rank // 2
             if all_extra > 0:
-                reduced_extra = max(0, all_extra - def_parry_rank)
+                reduced_extra = max(0, all_extra - parry_reduction)
                 full_rolled = weapon.rolled + attacker.rings.fire.value + all_extra
                 reduced_rolled = weapon.rolled + attacker.rings.fire.value + reduced_extra
                 full_raw = f"{full_rolled}k{weapon.kept}"
                 reduced_display = _format_pool_with_overflow(reduced_rolled, weapon.kept)
-                parry_action.description += f" — {full_raw} is reduced to {reduced_display}"
+                da_prevent_note = "automatic serious wound is prevented, and " if is_double_attack else ""
+                parry_action.description += f" — {da_prevent_note}{full_raw} is reduced to {reduced_display}"
 
     # --- Roll damage ---
-    # Extra damage dice from raises, reduced by parry rank if parry was attempted
-    all_extra_dice = max(0, (attack_action.total - tn) // 5)
+    # For double attack, extra dice use base_tn (before +20)
+    extra_tn_for_dice = base_tn if is_double_attack else tn
+    all_extra_dice = max(0, (attack_action.total - extra_tn_for_dice) // 5)
     if parry_attempted:
-        extra_dice = max(0, all_extra_dice - def_parry_rank)
+        # Fourth Dan Mirumoto attacker: subtract only half parry rank
+        parry_reduction = def_parry_rank
+        if atk_is_mirumoto and atk_dan >= 4:
+            parry_reduction = def_parry_rank // 2
+        extra_dice = max(0, all_extra_dice - parry_reduction)
     else:
         extra_dice = all_extra_dice
 
@@ -728,9 +1216,23 @@ def _resolve_attack(
     if parry_attempted and not parry_succeeded:
         ab9_rank = attacker.ability_rank(9)
         if ab9_rank > 0:
-            removed = min(all_extra_dice, def_parry_rank)
+            parry_red = def_parry_rank
+            if atk_is_mirumoto and atk_dan >= 4:
+                parry_red = def_parry_rank // 2
+            removed = min(all_extra_dice, parry_red)
             bonus_back = min(removed, 2 * ab9_rank)
             extra_dice += bonus_back
+
+    # Double attack: failed parry converts 1 serious wound to 2 extra rolled dice
+    da_extra_rolled = 0
+    da_serious_wound = 0
+    if is_double_attack:
+        if parry_attempted and not parry_succeeded:
+            # Serious wound converts to 2 extra rolled dice instead
+            da_extra_rolled = 2
+        elif not parry_attempted:
+            # No parry: inflict 1 extra serious wound directly
+            da_serious_wound = 1
 
     # Ability 3: Weapon damage boost — add rolled dice if weapon < 4k2
     boosted_rolled = weapon.rolled
@@ -739,9 +1241,12 @@ def _resolve_attack(
         if weapon.rolled < 4 or (weapon.rolled >= 4 and weapon.kept < 2):
             boosted_rolled = min(weapon.rolled + ab3_rank, 4)
 
-    damage_action = roll_damage(attacker, boosted_rolled, weapon.kept, extra_dice)
+    damage_action = roll_damage(attacker, boosted_rolled, weapon.kept, extra_dice + da_extra_rolled)
     damage_action.phase = phase
     damage_action.target = defender_name
+    # Show overflow conversion in damage dice pool
+    dmg_rolled = boosted_rolled + attacker.rings.fire.value + extra_dice + da_extra_rolled
+    damage_action.dice_pool = _format_pool_with_overflow(dmg_rolled, weapon.kept)
 
     # Ability 4: Damage rounding
     ab4_rank = attacker.ability_rank(4)
@@ -766,8 +1271,13 @@ def _resolve_attack(
     wound_tracker = log.wounds[defender_name]
     wound_tracker.light_wounds += damage_action.total
 
+    # Double attack: inflict extra serious wound directly (no parry case)
+    if da_serious_wound > 0:
+        wound_tracker.serious_wounds += da_serious_wound
+        damage_action.description += f" (double attack: +{da_serious_wound} serious wound)"
+
     # Snapshot after damage is applied
-    damage_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points)
+    damage_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
 
     # --- Wound check ---
     water_value = defender.rings.water.value
@@ -775,10 +1285,11 @@ def _resolve_attack(
     # Decide how many void points to spend
     max_spend = defender.rings.lowest()
     void_spend = _should_spend_void_on_wound_check(
-        water_value, wound_tracker.light_wounds, void_points.get(defender_name, 0),
+        water_value, wound_tracker.light_wounds, _total_void(void_points, temp_void, defender_name),
         max_spend=max_spend,
     )
-    void_points[defender_name] -= void_spend
+    wc_from_temp, wc_from_reg = _spend_void(void_points, temp_void, defender_name, void_spend)
+    wc_void_label = _void_spent_label(wc_from_temp, wc_from_reg)
 
     # Ability 7: Extra unkept dice on wound check
     ab7_extra = 2 * defender.ability_rank(7)
@@ -799,7 +1310,7 @@ def _resolve_attack(
         if wc_total >= effective_tn:
             passed = True
 
-    void_note = f" ({void_spend} void point spent)" if void_spend else ""
+    void_note = f" ({wc_void_label})" if wc_void_label else ""
 
     # Record the TN before any conversion modifies light_wounds
     wc_tn = wound_tracker.light_wounds + ab10_bonus
@@ -817,6 +1328,8 @@ def _resolve_attack(
             wound_tracker.serious_wounds += 1
             wound_tracker.light_wounds = 0
             convert_note = " — converted light wounds to 1 serious wound"
+        else:
+            convert_note = f" — keeping {wound_tracker.light_wounds} light wounds"
 
     wc_rolled = water_value + 1 + ab7_extra
     wc_kept = water_value + void_spend
@@ -842,4 +1355,4 @@ def _resolve_attack(
         wound_tracker.light_wounds = 0
 
     # Snapshot after wound check (reflects serious wound promotion if failed)
-    wc_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points)
+    wc_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)

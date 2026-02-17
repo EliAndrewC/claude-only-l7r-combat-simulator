@@ -306,6 +306,95 @@ def _should_use_double_attack(
     return False, 0
 
 
+def _matsu_attack_choice(
+    lunge_rank: int,
+    double_attack_rank: int,
+    attack_skill: int,
+    fire_ring: int,
+    defender_parry: int,
+    void_available: int,
+    max_void_spend: int,
+    dan: int,
+    is_crippled: bool,
+) -> tuple[str, int]:
+    """Decide whether Matsu uses Lunge or Double Attack, and void to spend.
+
+    Matsu NEVER makes a normal attack — always Lunge or Double Attack.
+    If crippled or double_attack_rank == 0: always Lunge.
+
+    Args:
+        lunge_rank: Character's Lunge knack rank.
+        double_attack_rank: Character's Double Attack knack rank.
+        attack_skill: Character's Attack skill rank.
+        fire_ring: Character's Fire ring value.
+        defender_parry: Defender's parry skill rank.
+        void_available: Remaining void points.
+        max_void_spend: Maximum void per action.
+        dan: Character's dan level.
+        is_crippled: Whether the attacker is crippled.
+
+    Returns:
+        Tuple of ("lunge" | "double_attack", void_to_spend).
+    """
+    if is_crippled or double_attack_rank <= 0:
+        # Matsu 3rd Dan+: more aggressive void on attacks (no reserve)
+        usable = min(void_available, max_void_spend) if dan >= 3 else (
+            min(void_available - 1, max_void_spend) if void_available > 1 else 0
+        )
+        lunge_rolled = lunge_rank + fire_ring
+        lunge_kept = fire_ring
+        base_tn = 5 + 5 * defender_parry
+        expected = lunge_kept * 5.5
+        if expected >= base_tn or usable <= 0:
+            return "lunge", 0
+        deficit = base_tn - expected
+        void_spend = min(usable, max(1, int(deficit / 5.5 + 0.5)))
+        return "lunge", void_spend
+
+    base_tn = 5 + 5 * defender_parry
+    da_tn = base_tn + 20
+    first_dan_bonus = 1 if dan >= 1 else 0
+
+    # DA expected value
+    da_rolled = double_attack_rank + fire_ring + first_dan_bonus
+    da_kept = fire_ring
+    da_expected = da_kept * 5.5
+
+    # Matsu 3rd Dan+: more aggressive void on attacks (no reserve)
+    usable_void = min(void_available, max_void_spend) if dan >= 3 else (
+        min(void_available - 1, max_void_spend) if void_available > 1 else 0
+    )
+    max_void_boost = usable_void * 5.5
+
+    # 4th Dan: near-miss DA (within 20 of TN) still hits
+    if dan >= 4:
+        effective_da_tn = da_tn - 20  # near-miss threshold
+        # Much more aggressive: attempt DA if can get within 20 of TN
+        if da_expected + max_void_boost >= effective_da_tn * 0.6:
+            if da_expected >= effective_da_tn:
+                return "double_attack", 0
+            deficit = effective_da_tn - da_expected
+            void_spend = min(usable_void, max(1, int(deficit / 5.5 + 0.5)))
+            return "double_attack", void_spend
+    else:
+        # Without 4th Dan: similar to Mirumoto threshold (85%+ chance)
+        if da_expected + max_void_boost >= da_tn * 0.85:
+            if da_expected >= da_tn:
+                return "double_attack", 0
+            deficit = da_tn - da_expected
+            void_spend = min(usable_void, max(1, int(deficit / 5.5 + 0.5)))
+            return "double_attack", void_spend
+
+    # DA not viable: Lunge
+    lunge_kept = fire_ring
+    expected = lunge_kept * 5.5
+    if expected >= base_tn or usable_void <= 0:
+        return "lunge", 0
+    deficit = base_tn - expected
+    void_spend = min(usable_void, max(1, int(deficit / 5.5 + 0.5)))
+    return "lunge", void_spend
+
+
 def _should_predeclare_parry(
     defender_parry_rank: int,
     air_ring: int,
@@ -504,6 +593,9 @@ def simulate_combat(
         char_b.name: 0,
     }
 
+    # Matsu 3rd Dan wound check bonus pool — persists across rounds
+    matsu_bonuses: dict[str, list[int]] = {char_a.name: [], char_b.name: []}
+
     for round_num in range(1, max_rounds + 1):
         log.round_number = round_num
 
@@ -517,19 +609,25 @@ def simulate_combat(
             else:
                 dan_points[name] = 0
 
+        # --- Lunge target bonus resets each round ---
+        lunge_target_bonus: dict[str, int] = {char_a.name: 0, char_b.name: 0}
+
         # --- Initiative Phase ---
         # Ability 6: extra unkept die on initiative
-        init_a = roll_initiative(char_a, extra_unkept=char_a.ability_rank(6))
-        init_b = roll_initiative(char_b, extra_unkept=char_b.ability_rank(6))
+        # Matsu SA: always rolls 10 dice for initiative
+        matsu_extra_a = max(0, 9 - char_a.rings.void.value) if char_a.school == "Matsu Bushi" else 0
+        matsu_extra_b = max(0, 9 - char_b.rings.void.value) if char_b.school == "Matsu Bushi" else 0
+        init_a = roll_initiative(char_a, extra_unkept=char_a.ability_rank(6) + matsu_extra_a)
+        init_b = roll_initiative(char_b, extra_unkept=char_b.ability_rank(6) + matsu_extra_b)
 
         actions_remaining: dict[str, list[int]] = {
             char_a.name: sorted(init_a.dice_kept),
             char_b.name: sorted(init_b.dice_kept),
         }
 
-        init_a.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
+        init_a.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
         log.add_action(init_a)
-        init_b.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
+        init_b.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
         log.add_action(init_b)
 
         # Build action schedule: list of (phase, die_value, character_name)
@@ -559,6 +657,8 @@ def simulate_combat(
                 fighters, actions_remaining, void_points,
                 dan_points=dan_points,
                 temp_void=temp_void,
+                matsu_bonuses=matsu_bonuses,
+                lunge_target_bonus=lunge_target_bonus,
             )
 
         # Check for combat end
@@ -579,6 +679,7 @@ def _snapshot_status(
     void_points: dict[str, int],
     dan_points: dict[str, int] | None = None,
     temp_void: dict[str, int] | None = None,
+    matsu_bonuses: dict[str, list[int]] | None = None,
 ) -> dict[str, FighterStatus]:
     """Build a snapshot of each fighter's current state."""
     result: dict[str, FighterStatus] = {}
@@ -595,6 +696,7 @@ def _snapshot_status(
             void_points_max=char.void_points_max,
             temp_void_points=temp_void.get(name, 0) if temp_void else 0,
             dan_points=dan_points.get(name, 0) if dan_points else 0,
+            matsu_bonuses=list(matsu_bonuses.get(name, [])) if matsu_bonuses else [],
         )
     return result
 
@@ -745,12 +847,18 @@ def _resolve_attack(
     void_points: dict[str, int],
     dan_points: dict[str, int] | None = None,
     temp_void: dict[str, int] | None = None,
+    matsu_bonuses: dict[str, list[int]] | None = None,
+    lunge_target_bonus: dict[str, int] | None = None,
 ) -> None:
     """Resolve a single attack action in a phase."""
     if dan_points is None:
         dan_points = {attacker_name: 0, defender_name: 0}
     if temp_void is None:
         temp_void = {attacker_name: 0, defender_name: 0}
+    if matsu_bonuses is None:
+        matsu_bonuses = {attacker_name: [], defender_name: []}
+    if lunge_target_bonus is None:
+        lunge_target_bonus = {attacker_name: 0, defender_name: 0}
 
     attacker: Character = attacker_info["char"]
     defender: Character = defender_info["char"]
@@ -779,17 +887,50 @@ def _resolve_attack(
     atk_dan = attacker.dan if atk_is_mirumoto else 0
     def_dan = defender.dan if def_is_mirumoto else 0
 
+    # Matsu school technique detection
+    atk_is_matsu = attacker.school == "Matsu Bushi"
+    def_is_matsu = defender.school == "Matsu Bushi"
+    atk_dan_matsu = attacker.dan if atk_is_matsu else 0
+    def_dan_matsu = defender.dan if def_is_matsu else 0
+
     # Calculate TN and roll attack
     tn = calculate_attack_tn(def_parry_rank)
     base_tn = tn  # Save for double attack extra dice calculation
 
-    # --- Double Attack decision (Mirumoto only) ---
+    # Lunge target bonus: opponent's attack gets easier TN
+    lunge_tn_reduction = lunge_target_bonus.get(attacker_name, 0)
+    if lunge_tn_reduction > 0:
+        tn = max(5, tn - lunge_tn_reduction)
+        lunge_target_bonus[attacker_name] = 0
+
+    # --- Double Attack / Lunge decision ---
     is_double_attack = False
+    is_lunge = False
+    is_near_miss_da = False
     da_void_spend = 0
+    lunge_void_spend = 0
     da_skill = attacker.get_skill("Double Attack")
     da_rank = da_skill.rank if da_skill else 0
+    lunge_skill = attacker.get_skill("Lunge")
+    lunge_rank = lunge_skill.rank if lunge_skill else 0
 
-    if atk_is_mirumoto and da_rank > 0 and not attacker_crippled:
+    if atk_is_matsu and not attacker_crippled:
+        # Matsu always uses Lunge or Double Attack
+        attack_choice, matsu_void = _matsu_attack_choice(
+            lunge_rank, da_rank, atk_rank, attacker.rings.fire.value,
+            def_parry_rank, _total_void(void_points, temp_void, attacker_name),
+            attacker.rings.lowest(), atk_dan_matsu, attacker_crippled,
+        )
+        if attack_choice == "double_attack":
+            is_double_attack = True
+            da_void_spend = matsu_void
+        else:
+            is_lunge = True
+            lunge_void_spend = matsu_void
+    elif atk_is_matsu and attacker_crippled:
+        # Crippled Matsu always lunges
+        is_lunge = True
+    elif atk_is_mirumoto and da_rank > 0 and not attacker_crippled:
         is_double_attack, da_void_spend = _should_use_double_attack(
             da_rank, atk_rank, attacker.rings.fire.value,
             def_parry_rank, _total_void(void_points, temp_void, attacker_name),
@@ -816,36 +957,90 @@ def _resolve_attack(
         actions_remaining[defender_name].remove(phase)
 
     # --- Roll attack ---
-    # First Dan: +1 rolled die on attack
+    # First Dan: +1 rolled die on attack (Mirumoto)
     effective_atk_rank = atk_rank
     if atk_is_mirumoto and atk_dan >= 1:
         effective_atk_rank += 1
 
-    if is_double_attack:
+    if is_lunge:
+        # Lunge attack: uses Lunge knack + Fire
+        lng_rolled = lunge_rank + attacker.rings.fire.value
+        lng_kept = attacker.rings.fire.value
+
+        # Void spending on lunge
+        lng_void_label = ""
+        actual_lunge_void = 0
+        if lunge_void_spend > 0 and _total_void(void_points, temp_void, attacker_name) >= lunge_void_spend:
+            lng_from_temp, lng_from_reg = _spend_void(void_points, temp_void, attacker_name, lunge_void_spend)
+            lng_void_label = _void_spent_label(lng_from_temp, lng_from_reg)
+            lng_rolled += lunge_void_spend
+            lng_kept += lunge_void_spend
+            actual_lunge_void = lunge_void_spend
+            # Matsu 3rd Dan: void spending generates wound check bonus
+            if atk_is_matsu and atk_dan_matsu >= 3:
+                bonus_value = 3 * atk_rank
+                for _ in range(actual_lunge_void):
+                    matsu_bonuses[attacker_name].append(bonus_value)
+
+        all_dice, kept_dice, total = roll_and_keep(lng_rolled, lng_kept, explode=attack_explode)
+        success = total >= tn
+        void_note = f" ({lng_void_label})" if lng_void_label else ""
+        attack_action = CombatAction(
+            phase=phase,
+            actor=attacker_name,
+            action_type=ActionType.LUNGE,
+            target=defender_name,
+            dice_rolled=all_dice,
+            dice_kept=kept_dice,
+            total=total,
+            tn=tn,
+            success=success,
+            description=f"{attacker_name} lunges: {_format_pool_with_overflow(lng_rolled, lng_kept)} vs TN {tn}{void_note}",
+            dice_pool=_format_pool_with_overflow(lng_rolled, lng_kept),
+        )
+        # Lunge: opponent's next attack gets -5 TN
+        lunge_target_bonus[defender_name] = 5
+
+    elif is_double_attack:
         # Double attack uses Double Attack skill + Fire (not Attack skill)
         da_rolled = da_rank + attacker.rings.fire.value
-        if atk_dan >= 1:
-            da_rolled += 1  # First Dan bonus
+        # First Dan bonus: Mirumoto or Matsu
+        if (atk_is_mirumoto and atk_dan >= 1) or (atk_is_matsu and atk_dan_matsu >= 1):
+            da_rolled += 1
         da_kept = attacker.rings.fire.value
 
         # Apply void spending on double attack
         da_void_label = ""
+        actual_da_void = 0
         if da_void_spend > 0 and _total_void(void_points, temp_void, attacker_name) >= da_void_spend:
             da_from_temp, da_from_reg = _spend_void(void_points, temp_void, attacker_name, da_void_spend)
             da_void_label = _void_spent_label(da_from_temp, da_from_reg)
             da_rolled += da_void_spend
             da_kept += da_void_spend
+            actual_da_void = da_void_spend
+            # Matsu 3rd Dan: void spending generates wound check bonus
+            if atk_is_matsu and atk_dan_matsu >= 3:
+                bonus_value = 3 * atk_rank
+                for _ in range(actual_da_void):
+                    matsu_bonuses[attacker_name].append(bonus_value)
 
         all_dice, kept_dice, total = roll_and_keep(da_rolled, da_kept, explode=attack_explode)
-        # Fifth Dan: +10 per void spent
+        # Fifth Dan Mirumoto: +10 per void spent
         fifth_dan_combat_bonus = 0
-        if atk_dan >= 5 and da_void_spend > 0:
+        if atk_is_mirumoto and atk_dan >= 5 and da_void_spend > 0:
             fifth_dan_combat_bonus = 10 * da_void_spend
             total += fifth_dan_combat_bonus
 
         success = total >= tn
+
+        # Matsu 4th Dan: near-miss double attack still hits
+        if atk_is_matsu and atk_dan_matsu >= 4 and not success and total >= tn - 20:
+            success = True
+            is_near_miss_da = True
+
         void_note = f" ({da_void_label})" if da_void_label else ""
         fifth_note = f" (mirumoto: +{fifth_dan_combat_bonus} 5th Dan)" if fifth_dan_combat_bonus > 0 else ""
+        near_miss_note = " (matsu 4th Dan: near-miss hit, base damage only)" if is_near_miss_da else ""
         attack_action = CombatAction(
             phase=phase,
             actor=attacker_name,
@@ -856,7 +1051,7 @@ def _resolve_attack(
             total=total,
             tn=tn,
             success=success,
-            description=f"{attacker_name} double attacks: {_format_pool_with_overflow(da_rolled, da_kept)} vs TN {tn}{void_note}{fifth_note}",
+            description=f"{attacker_name} double attacks: {_format_pool_with_overflow(da_rolled, da_kept)} vs TN {tn}{void_note}{fifth_note}{near_miss_note}",
             dice_pool=_format_pool_with_overflow(da_rolled, da_kept),
         )
     else:
@@ -937,6 +1132,10 @@ def _resolve_attack(
             attack_action.total = new_total
             attack_action.success = new_total >= tn
             attack_action.description += f" ({cr_label}: rerolled 10s)"
+            # Matsu 3rd Dan: crippled reroll void spending generates bonus
+            if atk_is_matsu and atk_dan_matsu >= 3:
+                bonus_value = 3 * atk_rank
+                matsu_bonuses[attacker_name].append(bonus_value)
 
     # Ability 1: Attack reroll — if attack misses, add 5 * rank
     parry_auto_succeeds = False
@@ -960,7 +1159,7 @@ def _resolve_attack(
             dan_points[attacker_name] -= dan_bonus_pts
             attack_action.description += f" (3rd dan: +{dan_bonus_pts * 2} bonus, {dan_bonus_pts} pts)"
 
-    attack_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
+    attack_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
     log.add_action(attack_action)
 
     # Attack missed — dice already consumed by pre-declaration (if any),
@@ -1007,7 +1206,7 @@ def _resolve_attack(
         if def_is_mirumoto:
             temp_void[defender_name] = temp_void.get(defender_name, 0) + 1
             parry_action.description += " (mirumoto SA: +1 temp void)"
-        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
+        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
         log.add_action(parry_action)
         return
 
@@ -1136,6 +1335,12 @@ def _resolve_attack(
                 pcr_from_temp, pcr_from_reg = _spend_void(void_points, temp_void, defender_name, 1)
                 pcr_label = "temp void" if pcr_from_temp else "void"
                 parry_bonus_note += f" ({pcr_label}: rerolled 10s)"
+                # Matsu 3rd Dan: crippled parry reroll void spending generates bonus
+                if def_is_matsu and def_dan_matsu >= 3:
+                    def_atk_s = defender.get_skill("Attack")
+                    def_atk_r = def_atk_s.rank if def_atk_s else 0
+                    bonus_value = 3 * def_atk_r
+                    matsu_bonuses[defender_name].append(bonus_value)
 
         effective_parry_total = parry_total + parry_bonus
 
@@ -1177,7 +1382,7 @@ def _resolve_attack(
         if def_is_mirumoto:
             temp_void[defender_name] = temp_void.get(defender_name, 0) + 1
             parry_action.description += " (mirumoto SA: +1 temp void)"
-        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
+        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
         log.add_action(parry_action)
 
         if parry_succeeded:
@@ -1194,9 +1399,12 @@ def _resolve_attack(
                 reduced_extra = max(0, all_extra - parry_reduction)
                 full_rolled = weapon.rolled + attacker.rings.fire.value + all_extra
                 reduced_rolled = weapon.rolled + attacker.rings.fire.value + reduced_extra
+                # DA failed parry: serious wound converts to +2 rolled dice
+                da_conversion_dice = 2 if is_double_attack and not is_near_miss_da else 0
+                reduced_rolled += da_conversion_dice
                 full_raw = f"{full_rolled}k{weapon.kept}"
                 reduced_display = _format_pool_with_overflow(reduced_rolled, weapon.kept)
-                da_prevent_note = "automatic serious wound is prevented, and " if is_double_attack else ""
+                da_prevent_note = "automatic serious wound is converted to +2 rolled dice, and " if is_double_attack else ""
                 parry_action.description += f" — {da_prevent_note}{full_raw} is reduced to {reduced_display}"
 
     # --- Roll damage ---
@@ -1226,13 +1434,17 @@ def _resolve_attack(
     # Double attack: failed parry converts 1 serious wound to 2 extra rolled dice
     da_extra_rolled = 0
     da_serious_wound = 0
-    if is_double_attack:
+    if is_double_attack and not is_near_miss_da:
         if parry_attempted and not parry_succeeded:
             # Serious wound converts to 2 extra rolled dice instead
             da_extra_rolled = 2
         elif not parry_attempted:
             # No parry: inflict 1 extra serious wound directly
             da_serious_wound = 1
+
+    # Near-miss DA: no extra dice, no auto serious wound
+    if is_near_miss_da:
+        extra_dice = 0
 
     # Ability 3: Weapon damage boost — add rolled dice if weapon < 4k2
     boosted_rolled = weapon.rolled
@@ -1241,11 +1453,14 @@ def _resolve_attack(
         if weapon.rolled < 4 or (weapon.rolled >= 4 and weapon.kept < 2):
             boosted_rolled = min(weapon.rolled + ab3_rank, 4)
 
-    damage_action = roll_damage(attacker, boosted_rolled, weapon.kept, extra_dice + da_extra_rolled)
+    # Lunge: +1 rolled damage die
+    lunge_damage_bonus = 1 if is_lunge else 0
+
+    damage_action = roll_damage(attacker, boosted_rolled, weapon.kept, extra_dice + da_extra_rolled + lunge_damage_bonus)
     damage_action.phase = phase
     damage_action.target = defender_name
     # Show overflow conversion in damage dice pool
-    dmg_rolled = boosted_rolled + attacker.rings.fire.value + extra_dice + da_extra_rolled
+    dmg_rolled = boosted_rolled + attacker.rings.fire.value + extra_dice + da_extra_rolled + lunge_damage_bonus
     damage_action.dice_pool = _format_pool_with_overflow(dmg_rolled, weapon.kept)
 
     # Ability 4: Damage rounding
@@ -1277,28 +1492,53 @@ def _resolve_attack(
         damage_action.description += f" (double attack: +{da_serious_wound} serious wound)"
 
     # Snapshot after damage is applied
-    damage_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
+    damage_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
 
     # --- Wound check ---
     water_value = defender.rings.water.value
 
+    # Matsu 3rd Dan: check if stored matsu bonuses can pass the wound check before deciding void
+    wc_tn_estimate = wound_tracker.light_wounds
+    matsu_bonus_note = ""
+    skip_void_for_matsu = False
+    if def_is_matsu and def_dan_matsu >= 3 and matsu_bonuses[defender_name]:
+        # Check if any stored bonus can plausibly help — if so, save void
+        for bonus in matsu_bonuses[defender_name]:
+            if bonus >= wc_tn_estimate * 0.3:
+                skip_void_for_matsu = True
+                break
+
     # Decide how many void points to spend
     max_spend = defender.rings.lowest()
-    void_spend = _should_spend_void_on_wound_check(
-        water_value, wound_tracker.light_wounds, _total_void(void_points, temp_void, defender_name),
-        max_spend=max_spend,
-    )
+    if skip_void_for_matsu:
+        void_spend = 0
+    else:
+        void_spend = _should_spend_void_on_wound_check(
+            water_value, wound_tracker.light_wounds, _total_void(void_points, temp_void, defender_name),
+            max_spend=max_spend,
+        )
     wc_from_temp, wc_from_reg = _spend_void(void_points, temp_void, defender_name, void_spend)
     wc_void_label = _void_spent_label(wc_from_temp, wc_from_reg)
 
+    # Matsu 3rd Dan: void spending on wound check generates bonus
+    if def_is_matsu and def_dan_matsu >= 3 and void_spend > 0:
+        def_atk_skill = defender.get_skill("Attack")
+        def_atk_rank = def_atk_skill.rank if def_atk_skill else 0
+        bonus_value = 3 * def_atk_rank
+        for _ in range(void_spend):
+            matsu_bonuses[defender_name].append(bonus_value)
+        matsu_bonus_note += f" (matsu 3rd Dan: +{bonus_value} wound check bonus stored)"
+
     # Ability 7: Extra unkept dice on wound check
     ab7_extra = 2 * defender.ability_rank(7)
+    # Matsu 1st Dan: +1 unkept die on wound check
+    matsu_wc_extra = 1 if def_is_matsu and def_dan_matsu >= 1 else 0
     # Ability 10: Wound check TN increase
     ab10_bonus = 5 * attacker.ability_rank(10)
 
     passed, wc_total, wc_all_dice, wc_kept_dice = make_wound_check(
         wound_tracker, water_value, void_spend=void_spend,
-        extra_rolled=ab7_extra, tn_bonus=ab10_bonus,
+        extra_rolled=ab7_extra + matsu_wc_extra, tn_bonus=ab10_bonus,
     )
 
     # Ability 5: Free crippled reroll on wound check
@@ -1309,6 +1549,17 @@ def _resolve_attack(
         effective_tn = wound_tracker.light_wounds + ab10_bonus
         if wc_total >= effective_tn:
             passed = True
+
+    # Matsu 3rd Dan: apply stored bonuses to failed wound check
+    if def_is_matsu and def_dan_matsu >= 3 and not passed and matsu_bonuses[defender_name]:
+        effective_tn = wound_tracker.light_wounds + ab10_bonus
+        for i, bonus in enumerate(matsu_bonuses[defender_name]):
+            if wc_total + bonus >= effective_tn:
+                wc_total += bonus
+                matsu_bonuses[defender_name].pop(i)
+                passed = True
+                matsu_bonus_note += f" (matsu 3rd Dan: applied +{bonus} bonus)"
+                break
 
     void_note = f" ({wc_void_label})" if wc_void_label else ""
 
@@ -1331,7 +1582,7 @@ def _resolve_attack(
         else:
             convert_note = f" — keeping {wound_tracker.light_wounds} light wounds"
 
-    wc_rolled = water_value + 1 + ab7_extra
+    wc_rolled = water_value + 1 + ab7_extra + matsu_wc_extra
     wc_kept = water_value + void_spend
     wc_action = CombatAction(
         phase=phase,
@@ -1344,7 +1595,7 @@ def _resolve_attack(
         success=passed,
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
-            f"(rolled {wc_total}){void_note}{convert_note}"
+            f"(rolled {wc_total}){void_note}{matsu_bonus_note}{convert_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )
@@ -1352,7 +1603,11 @@ def _resolve_attack(
 
     # If wound check failed, light wounds reset to 0 (handled in make_wound_check via serious)
     if not passed:
-        wound_tracker.light_wounds = 0
+        # Matsu 5th Dan: light wounds reset to 15 instead of 0
+        reset_value = 15 if atk_is_matsu and atk_dan_matsu >= 5 else 0
+        wound_tracker.light_wounds = reset_value
+        if reset_value > 0:
+            wc_action.description += " (matsu 5th Dan: light wounds reset to 15)"
 
     # Snapshot after wound check (reflects serious wound promotion if failed)
-    wc_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
+    wc_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)

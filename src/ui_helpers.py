@@ -12,7 +12,7 @@ from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
 from src.models.weapon import Weapon
 
 # Annotations worth surfacing from action descriptions.
-_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man", "mirumoto", "3rd dan")
+_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man", "mirumoto", "matsu", "3rd dan")
 
 
 def _md_to_html(text: str) -> str:
@@ -68,7 +68,7 @@ def _group_action_sequences(
     current: list[CombatAction] = []
 
     for action in actions:
-        if action.action_type in (ActionType.ATTACK, ActionType.DOUBLE_ATTACK):
+        if action.action_type in (ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE):
             if current:
                 sequences.append(current)
             current = [action]
@@ -201,6 +201,7 @@ _ACTION_ICONS = {
     ActionType.INTERRUPT: "🛡️",
     ActionType.DAMAGE: "💥",
     ActionType.WOUND_CHECK: "❤️",
+    ActionType.LUNGE: "🗡️💨",
 }
 
 
@@ -332,6 +333,9 @@ def _format_fighter_status(name: str, status: FighterStatus) -> str:
         parts.append(f"Temp Void {status.temp_void_points}")
     if status.dan_points > 0:
         parts.append(f"3rd Dan points: {status.dan_points}")
+    if status.matsu_bonuses:
+        bonuses_str = ", ".join(f"+{b}" for b in status.matsu_bonuses)
+        parts.append(f"3rd Dan bonuses: {bonuses_str}")
     if status.is_mortally_wounded:
         parts.append("**MORTAL**")
     elif status.is_crippled:

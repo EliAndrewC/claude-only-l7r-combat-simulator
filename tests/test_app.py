@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from streamlit.testing.v1 import AppTest
 
+from src.engine.matsu import compute_matsu_stats_from_xp
 from src.engine.mirumoto import compute_mirumoto_stats_from_xp
 from src.engine.xp_builder import compute_stats_from_xp
 from src.engine.waveman import compute_waveman_stats_from_xp
@@ -633,3 +634,111 @@ class TestDanPointsUI:
         desc = "Mirumoto attacks: 6k3 vs TN 15 (3rd dan: +4 bonus, 2 pts)"
         result = extract_annotations(desc)
         assert "(3rd dan: +4 bonus, 2 pts)" in result
+
+
+class TestLungeActionSequence:
+    """Tests for Lunge action type in grouping and display."""
+
+    def test_lunge_starts_new_sequence(self) -> None:
+        """LUNGE starts a new action sequence like ATTACK does."""
+        actions = [
+            _action(ActionType.INITIATIVE, actor="A"),
+            _action(ActionType.INITIATIVE, actor="B"),
+            _action(ActionType.LUNGE, phase=3, actor="A"),
+            _action(ActionType.DAMAGE, phase=3, actor="A"),
+            _action(ActionType.WOUND_CHECK, phase=3, actor="B"),
+        ]
+        seqs = _group_action_sequences(actions)
+        assert len(seqs) == 2
+        assert seqs[0][0].action_type == ActionType.INITIATIVE
+        assert seqs[1][0].action_type == ActionType.LUNGE
+        assert len(seqs[1]) == 3
+
+
+class TestMatsuUI:
+    """Tests for Matsu Bushi build mode UI."""
+
+    def test_matsu_option_loads(self) -> None:
+        """Selecting 'Matsu Bushi' doesn't crash."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Matsu Bushi").run()
+        assert not at.exception
+
+    def test_matsu_fight_works(self) -> None:
+        """Two Matsu Bushi can fight without errors."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Matsu Bushi").run()
+        at.selectbox(key="f2_preset").set_value("Matsu Bushi").run()
+        at.button[0].click().run()
+        assert not at.exception
+        has_result = len(at.success) > 0 or len(at.warning) > 0
+        assert has_result
+
+    def test_matsu_shows_knack_sliders(self) -> None:
+        """Matsu mode has knack slider widgets."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Matsu Bushi").run()
+        assert not at.exception
+        assert at.slider(key="f1_knack_double_attack") is not None
+        assert at.slider(key="f1_knack_iaijutsu") is not None
+        assert at.slider(key="f1_knack_lunge") is not None
+
+    def test_matsu_build_mode_persists(self) -> None:
+        """Build mode query param round-trip for Matsu."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.query_params["f1_build"] = "Matsu Bushi"
+        at.run()
+        assert not at.exception
+        assert at.session_state["f1_preset"] == "Matsu Bushi"
+
+    def test_matsu_rings_from_xp(self) -> None:
+        """Matsu ring values match compute_matsu_stats_from_xp."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Matsu Bushi").run()
+        stats = compute_matsu_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        assert at.session_state["f1_fire"] == stats.ring_values["fire"]
+        assert at.session_state["f1_air"] == stats.ring_values["air"]
+
+    def test_switching_to_matsu_repopulates(self) -> None:
+        """Switching from Base to Matsu recomputes ring values."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Matsu Bushi").run()
+        stats = compute_matsu_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        for rn in ("air", "fire", "earth", "water", "void"):
+            assert at.session_state[f"f1_{rn}"] == stats.ring_values[rn]
+
+    def test_matsu_defaults_to_katana(self) -> None:
+        """Selecting Matsu Bushi sets weapon to Katana."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Matsu Bushi").run()
+        assert at.session_state["f1_weapon"] == WeaponType.KATANA
+
+    def test_matsu_bonuses_displayed_in_status(self) -> None:
+        """Status display shows 3rd Dan bonuses when non-empty."""
+        status = FighterStatus(
+            void_points=3, void_points_max=3, matsu_bonuses=[9, 9],
+            actions_remaining=[3, 7],
+        )
+        result = _format_fighter_status("Matsu", status)
+        assert "3rd Dan bonuses: +9, +9" in result
+
+    def test_matsu_bonuses_hidden_when_empty(self) -> None:
+        """No bonuses text when matsu_bonuses is empty."""
+        status = FighterStatus(
+            void_points=3, void_points_max=3, matsu_bonuses=[],
+            actions_remaining=[3, 7],
+        )
+        result = _format_fighter_status("Matsu", status)
+        assert "3rd Dan bonuses" not in result
+
+    def test_matsu_annotation_extracted(self) -> None:
+        """extract_annotations picks up matsu bonus text."""
+        desc = "Matsu lunges: 6k3 vs TN 15 (matsu 3rd Dan: +12 wound check bonus stored)"
+        result = extract_annotations(desc)
+        assert "(matsu 3rd Dan: +12 wound check bonus stored)" in result

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from src.engine.matsu import compute_matsu_stats_from_xp
 from src.engine.mirumoto import compute_mirumoto_stats_from_xp
 from src.engine.waveman import (
     WAVE_MAN_ABILITY_NAMES,
@@ -60,6 +61,11 @@ def _maybe_repopulate_stats(prefix: str, build_choice: str,
             earned_xp=earned_xp,
             non_combat_pct=non_combat / 100.0,
         )
+    elif build_choice == "Matsu Bushi":
+        stats = compute_matsu_stats_from_xp(
+            earned_xp=earned_xp,
+            non_combat_pct=non_combat / 100.0,
+        )
     elif build_choice == "Wave Man":
         stats = compute_waveman_stats_from_xp(
             earned_xp=earned_xp,
@@ -77,8 +83,8 @@ def _maybe_repopulate_stats(prefix: str, build_choice: str,
     st.session_state[f"{prefix}_atk"] = stats.attack
     st.session_state[f"{prefix}_parry"] = stats.parry
 
-    # Mirumoto knack ranks
-    if build_choice == "Mirumoto Bushi":
+    # School knack ranks
+    if build_choice in ("Mirumoto Bushi", "Matsu Bushi"):
         for knack_key, rank in stats.knack_ranks.items():
             st.session_state[f"{prefix}_knack_{knack_key}"] = rank
 
@@ -92,7 +98,7 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     """Build character configuration in the sidebar, returning character, weapon type, and build choice."""
     st.sidebar.header(f"{label}")
 
-    build_options = ["Base", "Wave Man", "Mirumoto Bushi"]
+    build_options = ["Base", "Wave Man", "Mirumoto Bushi", "Matsu Bushi"]
     build_choice = st.sidebar.selectbox(
         f"{label} Build", build_options, index=0, key=f"{key_prefix}_preset"
     )
@@ -141,7 +147,7 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         f"{build_choice} Parry", 0, 5, parry_default, key=f"{key_prefix}_parry"
     )
 
-    # --- Knack sliders (Mirumoto only) ---
+    # --- Knack sliders (school builds only) ---
     knack_ranks: dict[str, int] = {}
     if build_choice == "Mirumoto Bushi":
         knack_display = {"counterattack": "Counterattack", "double_attack": "Double Attack", "iaijutsu": "Iaijutsu"}
@@ -168,6 +174,34 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
             techniques.append("5th: +10/void on combat")
         if dan_level >= 1:
             techniques.append("SA: temp void on parry")
+        if techniques:
+            st.sidebar.text("Techniques: " + ", ".join(techniques))
+
+    elif build_choice == "Matsu Bushi":
+        knack_display = {"double_attack": "Double Attack", "iaijutsu": "Iaijutsu", "lunge": "Lunge"}
+        st.sidebar.markdown("**School Knacks**")
+        for knack_key, knack_name in knack_display.items():
+            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            knack_ranks[knack_key] = st.sidebar.slider(
+                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+            )
+        # Dan level display (read-only)
+        dan_level = min(knack_ranks.values()) if knack_ranks else 0
+        st.sidebar.text(f"Dan: {dan_level}")
+        # Active techniques display
+        techniques = []
+        if dan_level >= 1:
+            techniques.append("1st: +1 die DA/iaijutsu/WC")
+        if dan_level >= 2:
+            techniques.append("2nd: free raise iaijutsu")
+        if dan_level >= 3:
+            techniques.append("3rd: void -> WC bonus")
+        if dan_level >= 4:
+            techniques.append("4th: near-miss DA + Fire")
+        if dan_level >= 5:
+            techniques.append("5th: light wounds reset 15")
+        if dan_level >= 1:
+            techniques.append("SA: 10 initiative dice")
         if techniques:
             st.sidebar.text("Techniques: " + ", ".join(techniques))
 
@@ -201,9 +235,18 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         Skill(name="Parry", rank=parry_rank, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
     ]
 
-    # Mirumoto: add knack skills
+    # School knack skills
     if build_choice == "Mirumoto Bushi":
         knack_display_names = {"counterattack": "Counterattack", "double_attack": "Double Attack", "iaijutsu": "Iaijutsu"}
+        for knack_key, knack_name in knack_display_names.items():
+            skills.append(Skill(
+                name=knack_name,
+                rank=knack_ranks.get(knack_key, 1),
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ))
+    elif build_choice == "Matsu Bushi":
+        knack_display_names = {"double_attack": "Double Attack", "iaijutsu": "Iaijutsu", "lunge": "Lunge"}
         for knack_key, knack_name in knack_display_names.items():
             skills.append(Skill(
                 name=knack_name,
@@ -223,6 +266,10 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         school_name = "Mirumoto Bushi"
         school_ring_val = RingName.VOID
         school_knacks_val = ["Counterattack", "Double Attack", "Iaijutsu"]
+    elif build_choice == "Matsu Bushi":
+        school_name = "Matsu Bushi"
+        school_ring_val = RingName.FIRE
+        school_knacks_val = ["Double Attack", "Iaijutsu", "Lunge"]
 
     char = Character(
         name=label,
@@ -236,7 +283,7 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     return char, weapon_type_choice, build_choice
 
 
-_VALID_BUILD_MODES = {"Base", "Wave Man", "Mirumoto Bushi"}
+_VALID_BUILD_MODES = {"Base", "Wave Man", "Mirumoto Bushi", "Matsu Bushi"}
 
 # --- Restore slider values from URL on page refresh ---
 for _pf in ("f1", "f2"):

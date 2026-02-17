@@ -163,14 +163,16 @@ class TestWoundCheck:
     def test_wound_check_pass(self) -> None:
         wt = WoundTracker(light_wounds=10, earth_ring=3)
         with patch("src.engine.combat.roll_and_keep", return_value=([8, 7, 5], [8, 7], 15)):
-            passed, total = make_wound_check(wt, water_ring=2)
+            passed, total, all_dice, kept_dice = make_wound_check(wt, water_ring=2)
             assert passed is True
             assert wt.serious_wounds == 0
+            assert all_dice == [8, 7, 5]
+            assert kept_dice == [8, 7]
 
     def test_wound_check_fail_adds_serious(self) -> None:
         wt = WoundTracker(light_wounds=20, earth_ring=2)
         with patch("src.engine.combat.roll_and_keep", return_value=([5, 3, 2], [5, 3], 8)):
-            passed, total = make_wound_check(wt, water_ring=2)
+            passed, total, _, _ = make_wound_check(wt, water_ring=2)
             assert passed is False
             # Failed by 12: 1 base + 1 for the 10 = 2 serious wounds
             assert wt.serious_wounds == 2
@@ -178,7 +180,7 @@ class TestWoundCheck:
     def test_wound_check_fail_by_exactly_10(self) -> None:
         wt = WoundTracker(light_wounds=20, earth_ring=2)
         with patch("src.engine.combat.roll_and_keep", return_value=([6, 4], [6, 4], 10)):
-            passed, _ = make_wound_check(wt, water_ring=2)
+            passed, _, _, _ = make_wound_check(wt, water_ring=2)
             assert passed is False
             # Failed by 10: 1 base + 1 = 2 serious wounds
             assert wt.serious_wounds == 2
@@ -189,7 +191,7 @@ class TestWoundCheckVoid:
         """void_spend=1 means kept = water + 1, so (water+1)k(water+1)."""
         wt = WoundTracker(light_wounds=15, earth_ring=3)
         with patch("src.engine.combat.roll_and_keep", return_value=([9, 8, 7], [9, 8, 7], 24)) as mock_rak:
-            passed, total = make_wound_check(wt, water_ring=2, void_spend=1)
+            passed, total, _, _ = make_wound_check(wt, water_ring=2, void_spend=1)
             # rolled = water+1 = 3, kept = water+void_spend = 3 → 3k3
             mock_rak.assert_called_once_with(3, 3, explode=True)
             assert passed is True
@@ -206,7 +208,7 @@ class TestWoundCheckVoid:
         """void_spend=3 means kept = water + 3, roll_and_keep handles capping."""
         wt = WoundTracker(light_wounds=20, earth_ring=3)
         with patch("src.engine.combat.roll_and_keep", return_value=([9, 8, 7], [9, 8, 7], 24)) as mock_rak:
-            passed, total = make_wound_check(wt, water_ring=2, void_spend=3)
+            passed, total, _, _ = make_wound_check(wt, water_ring=2, void_spend=3)
             # rolled = water+1 = 3, kept = water+void_spend = 5 → 3k5
             # roll_and_keep will internally cap kept to rolled
             mock_rak.assert_called_once_with(3, 5, explode=True)

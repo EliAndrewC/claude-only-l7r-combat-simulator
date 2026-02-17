@@ -145,7 +145,7 @@ def make_wound_check(
     wound_tracker: WoundTracker,
     water_ring: int,
     void_spend: int = 0,
-) -> tuple[bool, int]:
+) -> tuple[bool, int, list[int], list[int]]:
     """Make a wound check against the current light wound total.
 
     Roll (Water + 1)k(Water + void_spend) vs TN = light_wounds.
@@ -157,7 +157,7 @@ def make_wound_check(
         void_spend: Void points spent. Each adds one kept die.
 
     Returns:
-        Tuple of (passed, roll_total).
+        Tuple of (passed, roll_total, all_dice, kept_dice).
 
     Raises:
         ValueError: If void_spend is negative.
@@ -168,7 +168,7 @@ def make_wound_check(
     kept = water_ring + void_spend
     tn = wound_tracker.light_wounds
 
-    _, _, total = roll_and_keep(rolled, kept, explode=True)
+    all_dice, kept_dice, total = roll_and_keep(rolled, kept, explode=True)
     passed = total >= tn
 
     if not passed:
@@ -176,7 +176,7 @@ def make_wound_check(
         serious = 1 + (deficit // 10)
         wound_tracker.serious_wounds += serious
 
-    return passed, total
+    return passed, total, all_dice, kept_dice
 
 
 def create_combat_log(combatant_names: list[str], earth_values: list[int]) -> CombatLog:

@@ -13,7 +13,7 @@ class ActionType(str, Enum):
     PARRY = "parry"
     INITIATIVE = "initiative"
     DAMAGE = "damage"
-    WOUND_CHECK = "wound_check"
+    WOUND_CHECK = "wound check"
     IAIJUTSU = "iaijutsu"
     SPELL = "spell"
     INTERRUPT = "interrupt"

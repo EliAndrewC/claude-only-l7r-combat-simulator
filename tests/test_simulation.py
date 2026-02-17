@@ -1186,7 +1186,7 @@ class TestDicePoolOnParryAndWoundCheck:
                 total=18, description="Attacker deals 18 damage",
                 dice_pool="7k2",
             )
-            mock_wc.return_value = (True, 25)
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
             _resolve_attack(
                 log, 5, fighters["Attacker"], fighters["Defender"],
@@ -1239,7 +1239,7 @@ class TestDamageContext:
                 total=18, description="Attacker deals 18 damage",
                 dice_pool="10k2",
             )
-            mock_wc.return_value = (True, 25)
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
             _resolve_attack(
                 log, 5, fighters["Attacker"], fighters["Defender"],
@@ -1357,7 +1357,7 @@ class TestDamageOverflowAnnotations:
                 total=18, description="Attacker deals 18 damage",
                 dice_pool="10k2",
             )
-            mock_wc.return_value = (True, 25)
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
             _resolve_attack(
                 log, 5, fighters["Attacker"], fighters["Defender"],
@@ -1488,7 +1488,7 @@ class TestDamageOverflowAnnotations:
                 total=18, description="Attacker deals 18 damage",
                 dice_pool="10k2",
             )
-            mock_wc.return_value = (True, 25)
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
             _resolve_attack(
                 log, 5, fighters["Attacker"], fighters["Defender"],

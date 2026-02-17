@@ -638,7 +638,9 @@ def _resolve_attack(
     )
     void_points[defender_name] -= void_spend
 
-    passed, wc_total = make_wound_check(wound_tracker, water_value, void_spend=void_spend)
+    passed, wc_total, wc_all_dice, wc_kept_dice = make_wound_check(
+        wound_tracker, water_value, void_spend=void_spend,
+    )
 
     void_note = f" ({void_spend} void point spent)" if void_spend else ""
 
@@ -665,8 +667,8 @@ def _resolve_attack(
         phase=phase,
         actor=defender_name,
         action_type=ActionType.WOUND_CHECK,
-        dice_rolled=[],
-        dice_kept=[],
+        dice_rolled=wc_all_dice,
+        dice_kept=wc_kept_dice,
         total=wc_total,
         tn=wc_tn,
         success=passed,

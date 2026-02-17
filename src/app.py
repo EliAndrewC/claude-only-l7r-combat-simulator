@@ -110,7 +110,7 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     return char, weapon_type_choice
 
 
-# --- Restore XP from URL on page refresh ---
+# --- Restore slider values from URL on page refresh ---
 for _pf in ("f1", "f2"):
     _key = f"{_pf}_earned_xp"
     if _key not in st.session_state and f"{_pf}_xp" in st.query_params:
@@ -119,16 +119,26 @@ for _pf in ("f1", "f2"):
             st.session_state[_key] = max(0, min(350, (_val // 10) * 10))
         except ValueError:
             pass
+    _key = f"{_pf}_noncombat"
+    if _key not in st.session_state and f"{_pf}_nc" in st.query_params:
+        try:
+            _val = int(st.query_params[f"{_pf}_nc"])
+            st.session_state[_key] = max(0, min(50, _val))
+        except ValueError:
+            pass
 
 # --- Sidebar: Character configuration ---
 char_a, wt_a = _build_character_sidebar("Fighter 1", "f1")
 char_b, wt_b = _build_character_sidebar("Fighter 2", "f2")
 
-# --- Sync XP to URL for persistence across refreshes ---
+# --- Sync slider values to URL for persistence across refreshes ---
 for _pf in ("f1", "f2"):
     _key = f"{_pf}_earned_xp"
     if _key in st.session_state:
         st.query_params[f"{_pf}_xp"] = str(st.session_state[_key])
+    _key = f"{_pf}_noncombat"
+    if _key in st.session_state:
+        st.query_params[f"{_pf}_nc"] = str(st.session_state[_key])
 
 # --- Main area: Character cards ---
 col1, col2 = st.columns(2)

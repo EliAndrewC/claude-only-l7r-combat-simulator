@@ -44,6 +44,13 @@ class TestAppSidebar:
 
 
 class TestXPPersistence:
+    @staticmethod
+    def _param_value(val: object) -> str:
+        """Normalize query param value (AppTest may return a list)."""
+        if isinstance(val, list):
+            return val[0]
+        return str(val)
+
     def test_xp_restored_from_query_params(self) -> None:
         """XP slider values are restored from URL query parameters on load."""
         at = AppTest.from_file("src/app.py", default_timeout=10)
@@ -54,27 +61,39 @@ class TestXPPersistence:
         assert at.session_state["f1_earned_xp"] == 150
         assert at.session_state["f2_earned_xp"] == 200
 
+    def test_noncombat_restored_from_query_params(self) -> None:
+        """Non-combat XP % slider values are restored from query params."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.query_params["f1_nc"] = "35"
+        at.query_params["f2_nc"] = "10"
+        at.run()
+        assert not at.exception
+        assert at.session_state["f1_noncombat"] == 35
+        assert at.session_state["f2_noncombat"] == 10
+
     def test_xp_synced_to_query_params(self) -> None:
         """After changing XP slider, value is written to query params."""
         at = AppTest.from_file("src/app.py", default_timeout=10)
         at.run()
-        # Change fighter 1 XP via slider
         at.slider(key="f1_earned_xp").set_value(100).run()
-        val = at.query_params["f1_xp"]
-        # AppTest may return a list or a string depending on version
-        if isinstance(val, list):
-            assert val == ["100"]
-        else:
-            assert val == "100"
+        assert self._param_value(at.query_params["f1_xp"]) == "100"
+
+    def test_noncombat_synced_to_query_params(self) -> None:
+        """After changing non-combat slider, value is written to query params."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.slider(key="f1_noncombat").set_value(40).run()
+        assert self._param_value(at.query_params["f1_nc"]) == "40"
 
     def test_invalid_query_param_ignored(self) -> None:
         """Non-integer query param values are silently ignored."""
         at = AppTest.from_file("src/app.py", default_timeout=10)
         at.query_params["f1_xp"] = "not_a_number"
+        at.query_params["f1_nc"] = "bad"
         at.run()
         assert not at.exception
-        # Should fall back to slider default of 0
         assert at.session_state["f1_earned_xp"] == 0
+        assert at.session_state["f1_noncombat"] == 20
 
 
 class TestExtractAnnotations:

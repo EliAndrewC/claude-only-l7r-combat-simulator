@@ -122,13 +122,40 @@ def render_winner_banner(log: CombatLog) -> None:
 
 def compute_combat_stats(log: CombatLog) -> dict:
     """Compute summary statistics from a combat log."""
-    attacks = [a for a in log.actions if a.action_type == ActionType.ATTACK]
+    _ATTACK_TYPES = {ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE}
+    attacks = [a for a in log.actions if a.action_type in _ATTACK_TYPES]
     hits = [a for a in attacks if a.success]
     parries = [a for a in log.actions if a.action_type == ActionType.PARRY]
     successful_parries = [a for a in parries if a.success]
     damages = [a for a in log.actions if a.action_type == ActionType.DAMAGE]
     biggest_attack = max((a.total for a in hits), default=0)
     biggest_damage = max((d.total for d in damages), default=0)
+
+    # Track max serious wounds inflicted in a single hit (damage + wound check).
+    # Record SW before each DAMAGE action, then check SW after the following WOUND_CHECK
+    # for the same target to capture the full hit sequence delta.
+    most_sw_one_hit = 0
+    prev_sw: dict[str, int] = {name: 0 for name in log.combatants}
+    sw_before_hit: dict[str, int] = {}
+    for action in log.actions:
+        if action.status_after is None:
+            continue
+        if action.action_type == ActionType.DAMAGE and action.target:
+            sw_before_hit[action.target] = prev_sw.get(action.target, 0)
+        if action.action_type == ActionType.WOUND_CHECK and action.actor in sw_before_hit:
+            sw_after = action.status_after[action.actor].serious_wounds
+            delta = sw_after - sw_before_hit.pop(action.actor)
+            if delta > most_sw_one_hit:
+                most_sw_one_hit = delta
+        for name, status in action.status_after.items():
+            prev_sw[name] = status.serious_wounds
+
+    # Count wound checks failed by 10 or more (causes extra serious wounds)
+    wound_checks = [a for a in log.actions if a.action_type == ActionType.WOUND_CHECK]
+    wc_failed_by_10 = sum(
+        1 for wc in wound_checks
+        if not wc.success and wc.tn is not None and (wc.tn - wc.total) >= 10
+    )
 
     return {
         "rounds": log.round_number,
@@ -138,6 +165,8 @@ def compute_combat_stats(log: CombatLog) -> dict:
         "successful_parries": len(successful_parries),
         "biggest_attack": biggest_attack,
         "biggest_damage": biggest_damage,
+        "most_sw_one_hit": most_sw_one_hit,
+        "wc_failed_by_10": wc_failed_by_10,
     }
 
 
@@ -146,11 +175,13 @@ def render_combat_stats(stats: dict) -> None:
     cols = st.columns(3)
     cols[0].metric("Rounds", stats["rounds"])
     cols[0].metric("Total Attacks", stats["total_attacks"])
-    cols[1].metric("Hits", stats["hits"])
+    cols[0].metric("Hits", stats["hits"])
     cols[1].metric("Biggest Attack Roll", stats["biggest_attack"])
     cols[1].metric("Biggest Damage Roll", stats["biggest_damage"])
+    cols[1].metric("Most SW From One Hit", stats["most_sw_one_hit"])
     cols[2].metric("Parry Attempts", stats["parry_attempts"])
     cols[2].metric("Successful Parries", stats["successful_parries"])
+    cols[2].metric("WC Failed by ≥10", stats["wc_failed_by_10"])
 
 
 def render_round_log(log: CombatLog) -> None:

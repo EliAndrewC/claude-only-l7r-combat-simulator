@@ -418,11 +418,93 @@ class TestComputeCombatStats:
         stats = compute_combat_stats(self._make_log())
         assert "biggest_hit" not in stats
 
+    def test_most_sw_one_hit_zero_without_snapshots(self) -> None:
+        """Without status_after snapshots, most_sw_one_hit is 0."""
+        stats = compute_combat_stats(self._make_log())
+        assert stats["most_sw_one_hit"] == 0
+
+    def test_most_sw_one_hit_tracks_delta(self) -> None:
+        """Most SW From One Hit tracks the max serious wound increase in one hit."""
+        log = CombatLog(combatants=["A", "B"])
+        # First hit: B goes from 0 to 1 SW
+        log.add_action(CombatAction(
+            phase=3, actor="A", action_type=ActionType.DAMAGE, target="B", total=20,
+            status_after={"A": FighterStatus(serious_wounds=0), "B": FighterStatus(serious_wounds=0)},
+        ))
+        log.add_action(CombatAction(
+            phase=3, actor="B", action_type=ActionType.WOUND_CHECK, total=10, tn=20, success=False,
+            status_after={"A": FighterStatus(serious_wounds=0), "B": FighterStatus(serious_wounds=1)},
+        ))
+        # Second hit: B goes from 1 to 3 SW (DA serious + failed WC)
+        log.add_action(CombatAction(
+            phase=5, actor="A", action_type=ActionType.DAMAGE, target="B", total=30,
+            status_after={"A": FighterStatus(serious_wounds=0), "B": FighterStatus(serious_wounds=2)},
+        ))
+        log.add_action(CombatAction(
+            phase=5, actor="B", action_type=ActionType.WOUND_CHECK, total=10, tn=30, success=False,
+            status_after={"A": FighterStatus(serious_wounds=0), "B": FighterStatus(serious_wounds=3)},
+        ))
+        stats = compute_combat_stats(log)
+        # Biggest single delta: 1→2 on damage (DA serious) + 2→3 on WC = 2 total from SW=1
+        assert stats["most_sw_one_hit"] == 2
+
+    def test_counts_lunges_and_double_attacks(self) -> None:
+        """Total attacks and hits include lunges and double attacks."""
+        log = CombatLog(combatants=["A", "B"])
+        log.add_action(CombatAction(
+            phase=3, actor="A", action_type=ActionType.ATTACK,
+            total=25, tn=15, success=True,
+        ))
+        log.add_action(CombatAction(
+            phase=5, actor="A", action_type=ActionType.DOUBLE_ATTACK,
+            total=40, tn=35, success=True,
+        ))
+        log.add_action(CombatAction(
+            phase=7, actor="B", action_type=ActionType.LUNGE,
+            total=30, tn=20, success=True,
+        ))
+        log.add_action(CombatAction(
+            phase=9, actor="B", action_type=ActionType.LUNGE,
+            total=10, tn=20, success=False,
+        ))
+        stats = compute_combat_stats(log)
+        assert stats["total_attacks"] == 4
+        assert stats["hits"] == 3
+        assert stats["biggest_attack"] == 40
+
+    def test_wc_failed_by_10(self) -> None:
+        """Count wound checks that failed by 10 or more."""
+        log = CombatLog(combatants=["A", "B"])
+        # Failed by 15 (tn=40, total=25) — counts
+        log.add_action(CombatAction(
+            phase=3, actor="B", action_type=ActionType.WOUND_CHECK,
+            total=25, tn=40, success=False,
+        ))
+        # Failed by exactly 10 (tn=30, total=20) — counts
+        log.add_action(CombatAction(
+            phase=5, actor="B", action_type=ActionType.WOUND_CHECK,
+            total=20, tn=30, success=False,
+        ))
+        # Failed by 5 (tn=25, total=20) — does not count
+        log.add_action(CombatAction(
+            phase=7, actor="A", action_type=ActionType.WOUND_CHECK,
+            total=20, tn=25, success=False,
+        ))
+        # Passed — does not count
+        log.add_action(CombatAction(
+            phase=9, actor="A", action_type=ActionType.WOUND_CHECK,
+            total=35, tn=30, success=True,
+        ))
+        stats = compute_combat_stats(log)
+        assert stats["wc_failed_by_10"] == 2
+
     def test_empty_log(self) -> None:
         log = CombatLog(combatants=["A", "B"])
         stats = compute_combat_stats(log)
         assert stats["biggest_attack"] == 0
         assert stats["biggest_damage"] == 0
+        assert stats["most_sw_one_hit"] == 0
+        assert stats["wc_failed_by_10"] == 0
 
 
 class TestMergedBuildMode:

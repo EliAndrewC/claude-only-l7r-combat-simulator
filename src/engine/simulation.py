@@ -1171,7 +1171,13 @@ def _resolve_attack(
     # For double attack, use base_tn (before +20) for extra dice calculation
     extra_tn = base_tn if is_double_attack else tn
     no_parry_extra = max(0, (attack_action.total - extra_tn) // 5)
-    raw_rolled = weapon.rolled + attacker.rings.fire.value + no_parry_extra
+    # Account for ability 3 weapon boost and lunge bonus in the preview
+    preview_weapon_rolled = weapon.rolled
+    ab3_rank = attacker.ability_rank(3)
+    if ab3_rank > 0 and (weapon.rolled < 4 or (weapon.rolled >= 4 and weapon.kept < 2)):
+        preview_weapon_rolled = min(weapon.rolled + ab3_rank, 4)
+    lunge_preview_bonus = 1 if is_lunge else 0
+    raw_rolled = preview_weapon_rolled + attacker.rings.fire.value + no_parry_extra + lunge_preview_bonus
     pool_display = _format_pool_with_overflow(raw_rolled, weapon.kept)
     da_wound_note = " plus 1 automatic serious wound" if is_double_attack else ""
     attack_action.description += f" — damage will be {pool_display}{da_wound_note}"
@@ -1397,8 +1403,8 @@ def _resolve_attack(
                 parry_reduction = def_parry_rank // 2
             if all_extra > 0:
                 reduced_extra = max(0, all_extra - parry_reduction)
-                full_rolled = weapon.rolled + attacker.rings.fire.value + all_extra
-                reduced_rolled = weapon.rolled + attacker.rings.fire.value + reduced_extra
+                full_rolled = preview_weapon_rolled + attacker.rings.fire.value + all_extra + lunge_preview_bonus
+                reduced_rolled = preview_weapon_rolled + attacker.rings.fire.value + reduced_extra + lunge_preview_bonus
                 # DA failed parry: serious wound converts to +2 rolled dice
                 da_conversion_dice = 2 if is_double_attack and not is_near_miss_da else 0
                 reduced_rolled += da_conversion_dice

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from streamlit.testing.v1 import AppTest
 
+from src.engine.xp_builder import compute_stats_from_xp
+from src.engine.waveman import compute_waveman_stats_from_xp
 from src.models.combat import ActionType, CombatAction, CombatLog
 from src.ui_helpers import _group_action_sequences, compute_combat_stats, extract_annotations
 
@@ -36,11 +38,27 @@ class TestAppLoads:
 
 
 class TestAppSidebar:
-    def test_sidebar_has_preset_selectors(self) -> None:
+    def test_sidebar_has_build_selectors(self) -> None:
         at = AppTest.from_file("src/app.py", default_timeout=10)
         at.run()
-        # Should have selectboxes for presets
+        # Should have selectboxes for build type (Base/Wave Man)
         assert len(at.selectbox) >= 2
+
+    def test_waveman_option_loads(self) -> None:
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Wave Man").run()
+        assert not at.exception
+
+    def test_waveman_fight_works(self) -> None:
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Wave Man").run()
+        at.selectbox(key="f2_preset").set_value("Wave Man").run()
+        at.button[0].click().run()
+        assert not at.exception
+        has_result = len(at.success) > 0 or len(at.warning) > 0
+        assert has_result
 
 
 class TestXPPersistence:
@@ -94,6 +112,31 @@ class TestXPPersistence:
         assert not at.exception
         assert at.session_state["f1_earned_xp"] == 0
         assert at.session_state["f1_noncombat"] == 20
+
+    def test_build_mode_restored_from_query_params(self) -> None:
+        """Build mode selectbox is restored from URL query params on load."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.query_params["f1_build"] = "Wave Man"
+        at.query_params["f2_build"] = "Wave Man"
+        at.run()
+        assert not at.exception
+        assert at.session_state["f1_preset"] == "Wave Man"
+        assert at.session_state["f2_preset"] == "Wave Man"
+
+    def test_build_mode_synced_to_query_params(self) -> None:
+        """After changing build mode, value is written to query params."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Wave Man").run()
+        assert self._param_value(at.query_params["f1_build"]) == "Wave Man"
+
+    def test_invalid_build_mode_query_param_ignored(self) -> None:
+        """Invalid build mode in query params defaults to Base."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.query_params["f1_build"] = "Nonexistent"
+        at.run()
+        assert not at.exception
+        assert at.session_state["f1_preset"] == "Base"
 
 
 class TestExtractAnnotations:
@@ -283,3 +326,86 @@ class TestComputeCombatStats:
         stats = compute_combat_stats(log)
         assert stats["biggest_attack"] == 0
         assert stats["biggest_damage"] == 0
+
+
+class TestMergedBuildMode:
+    """Tests for the merged Base/Wave Man build modes with editable fields."""
+
+    def test_base_shows_editable_rings(self) -> None:
+        """Base mode renders ring number_input widgets."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        assert not at.exception
+        # Ring inputs should exist for fighter 1
+        assert at.number_input(key="f1_air") is not None
+        assert at.number_input(key="f1_fire") is not None
+        assert at.number_input(key="f1_earth") is not None
+        assert at.number_input(key="f1_water") is not None
+        assert at.number_input(key="f1_void") is not None
+
+    def test_rings_populated_from_xp(self) -> None:
+        """Ring values in session state match compute_stats_from_xp defaults."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        stats = compute_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        for rn in ("air", "fire", "earth", "water", "void"):
+            assert at.session_state[f"f1_{rn}"] == stats.ring_values[rn]
+        assert at.session_state["f1_atk"] == stats.attack
+        assert at.session_state["f1_parry"] == stats.parry
+
+    def test_xp_change_repopulates(self) -> None:
+        """Changing XP slider updates ring values to match new computation."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.slider(key="f1_earned_xp").set_value(100).run()
+        assert not at.exception
+        stats = compute_stats_from_xp(earned_xp=100, non_combat_pct=0.20)
+        for rn in ("air", "fire", "earth", "water", "void"):
+            assert at.session_state[f"f1_{rn}"] == stats.ring_values[rn]
+        assert at.session_state["f1_atk"] == stats.attack
+        assert at.session_state["f1_parry"] == stats.parry
+
+    def test_manual_edit_persists(self) -> None:
+        """Editing a ring without changing XP keeps the manual value."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        # Manually change air ring to 5
+        at.number_input(key="f1_air").set_value(5).run()
+        assert not at.exception
+        assert at.session_state["f1_air"] == 5
+
+    def test_xp_overwrites_manual_edit(self) -> None:
+        """Changing XP after a manual edit resets to computed values."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        # Manually set air to 5
+        at.number_input(key="f1_air").set_value(5).run()
+        assert at.session_state["f1_air"] == 5
+        # Now change XP — should overwrite
+        at.slider(key="f1_earned_xp").set_value(100).run()
+        stats = compute_stats_from_xp(earned_xp=100, non_combat_pct=0.20)
+        assert at.session_state["f1_air"] == stats.ring_values["air"]
+
+    def test_waveman_shows_editable_rings(self) -> None:
+        """Wave Man mode has ring number_input widgets."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Wave Man").run()
+        assert not at.exception
+        assert at.number_input(key="f1_air") is not None
+        stats = compute_waveman_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        for rn in ("air", "fire", "earth", "water", "void"):
+            assert at.session_state[f"f1_{rn}"] == stats.ring_values[rn]
+
+    def test_switching_mode_repopulates(self) -> None:
+        """Switching from Base to Wave Man recomputes ring values."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        # Start in Base mode (default)
+        base_stats = compute_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        assert at.session_state["f1_air"] == base_stats.ring_values["air"]
+        # Switch to Wave Man
+        at.selectbox(key="f1_preset").set_value("Wave Man").run()
+        wm_stats = compute_waveman_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        for rn in ("air", "fire", "earth", "water", "void"):
+            assert at.session_state[f"f1_{rn}"] == wm_stats.ring_values[rn]

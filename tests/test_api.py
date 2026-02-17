@@ -94,23 +94,3 @@ class TestWeapons:
         assert katana["rolled"] == 4
         assert katana["kept"] == 2
         assert katana["dice"] == "4k2"
-
-
-class TestPresets:
-    def test_list_presets(self) -> None:
-        response = client.get("/presets")
-        assert response.status_code == 200
-        data = response.json()
-        assert len(data) == 6
-
-    def test_get_preset_by_name(self) -> None:
-        response = client.get("/presets/Akodo Taro")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["name"] == "Akodo Taro"
-        assert "character" in data
-        assert "weapon_type" in data
-
-    def test_get_preset_not_found(self) -> None:
-        response = client.get("/presets/Nonexistent")
-        assert response.status_code == 404

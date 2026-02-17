@@ -75,6 +75,7 @@ def roll_and_keep(
 def reroll_tens(
     all_dice: list[int],
     kept_count: int,
+    max_reroll: int | None = None,
 ) -> tuple[list[int], list[int], int]:
     """Reroll any dice showing exactly 10 with explosion enabled.
 
@@ -83,14 +84,20 @@ def reroll_tens(
     Args:
         all_dice: All dice from the original roll (descending order).
         kept_count: Number of dice to keep (highest).
+        max_reroll: Maximum number of 10s to reroll. None means reroll all.
 
     Returns:
         Tuple of (all_dice, kept_dice, total) after rerolling 10s.
     """
-    new_dice = [
-        roll_die(explode=True) if d == 10 else d
-        for d in all_dice
-    ]
+    rerolled = 0
+    new_dice: list[int] = []
+    for d in all_dice:
+        if d == 10 and (max_reroll is None or rerolled < max_reroll):
+            new_dice.append(roll_die(explode=True))
+            rerolled += 1
+        else:
+            new_dice.append(d)
+
     new_dice.sort(reverse=True)
     kept_dice = new_dice[:kept_count]
     total = sum(kept_dice)

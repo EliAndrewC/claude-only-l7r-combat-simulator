@@ -7,9 +7,19 @@ non-combat skills and the rest is spent raising rings and combat skills.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Optional
 
 from src.models.character import Character, Ring, RingName, Rings, Skill, SkillType
+
+
+@dataclass
+class ComputedStats:
+    """Raw ring values and skill ranks computed from XP."""
+
+    ring_values: dict[str, int] = field(default_factory=dict)
+    attack: int = 0
+    parry: int = 0
 
 
 def ring_raise_cost(new_value: int) -> int:
@@ -28,21 +38,26 @@ def advanced_skill_raise_cost(new_rank: int) -> int:
 
 
 # Each entry raises that stat by 1. Covers all rings to 5 and skills to 5.
+# Parry is the top priority; attack is raised immediately before each parry
+# raise so parry is typically 1 higher than attack.  Skills reach each tier
+# before rings advance to that tier.
 DEFAULT_COMBAT_PROGRESSION: list[str] = [
-    # Cycle 1
-    "void", "water", "earth", "fire", "attack", "parry",
-    # Cycle 2
-    "void", "water", "attack", "parry",
-    # Cycle 3
-    "air", "earth", "attack", "parry",
-    # Cycle 4
-    "fire", "void", "water", "attack", "parry",
-    # Cycle 5
-    "air", "earth", "fire", "attack", "parry",
-    # Cycle 6
-    "void", "water", "air",
-    # Cycle 7
-    "earth", "fire",
+    # Skills to 3 (parry prioritised, attack enables each raise)
+    "parry",
+    "attack", "parry",
+    "attack", "parry",
+    # Skills to 4 (before any ring reaches 4, incl. school ring at 3)
+    "attack", "parry",
+    # Rings first raise (non-school 2→3, school 3→4)
+    "void", "water", "earth", "fire", "air",
+    # Skills to 5 (before any ring reaches 5)
+    "attack", "parry",
+    # Rings second raise (non-school 3→4, school 4→5)
+    "void", "water", "earth", "fire", "air",
+    # Rings third raise (non-school 4→5, school 5→6)
+    "void", "water", "earth", "fire", "air",
+    # Attack to 5 (catch up with parry)
+    "attack",
 ]
 
 _RING_NAMES: dict[str, RingName] = {
@@ -54,17 +69,18 @@ _RING_NAMES: dict[str, RingName] = {
 }
 
 
-def build_character_from_xp(
-    name: str = "Fighter",
+def compute_stats_from_xp(
     earned_xp: int = 0,
     school_ring: Optional[RingName] = None,
     non_combat_pct: float = 0.20,
     progression: Optional[list[str]] = None,
-) -> Character:
-    """Build a character by spending XP along a progression order.
+) -> ComputedStats:
+    """Compute raw ring values and skill ranks from XP.
+
+    Same XP-walking logic as ``build_character_from_xp`` but returns only
+    the numeric stats without constructing a full Character.
 
     Args:
-        name: Character name.
         earned_xp: XP earned beyond the base 150.
         school_ring: The school's focus ring (starts at 3, max 6).
         non_combat_pct: Fraction of total XP lost to non-combat skills.
@@ -72,16 +88,14 @@ def build_character_from_xp(
             ``DEFAULT_COMBAT_PROGRESSION``.
 
     Returns:
-        A fully constructed ``Character``.
+        A ``ComputedStats`` with ring_values, attack, and parry.
     """
     if progression is None:
         progression = DEFAULT_COMBAT_PROGRESSION
 
     total_xp = 150 + earned_xp
     combat_xp = int(total_xp * (1 - non_combat_pct))
-    non_combat_xp = total_xp - combat_xp
 
-    # --- Initialise stats ---
     ring_values: dict[str, int] = {
         "air": 2, "fire": 2, "earth": 2, "water": 2, "void": 2,
     }
@@ -92,7 +106,6 @@ def build_character_from_xp(
     parry = 0
     budget = combat_xp
 
-    # --- Walk the progression ---
     for entry in progression:
         if entry in ring_values:
             current = ring_values[entry]
@@ -125,8 +138,59 @@ def build_character_from_xp(
             parry += 1
             budget -= cost
 
-    # --- Build Character ---
-    combat_spent = combat_xp - budget
+    return ComputedStats(ring_values=ring_values, attack=attack, parry=parry)
+
+
+def build_character_from_xp(
+    name: str = "Fighter",
+    earned_xp: int = 0,
+    school_ring: Optional[RingName] = None,
+    non_combat_pct: float = 0.20,
+    progression: Optional[list[str]] = None,
+) -> Character:
+    """Build a character by spending XP along a progression order.
+
+    Args:
+        name: Character name.
+        earned_xp: XP earned beyond the base 150.
+        school_ring: The school's focus ring (starts at 3, max 6).
+        non_combat_pct: Fraction of total XP lost to non-combat skills.
+        progression: Ordered list of stats to raise. Defaults to
+            ``DEFAULT_COMBAT_PROGRESSION``.
+
+    Returns:
+        A fully constructed ``Character``.
+    """
+    stats = compute_stats_from_xp(
+        earned_xp=earned_xp,
+        school_ring=school_ring,
+        non_combat_pct=non_combat_pct,
+        progression=progression,
+    )
+
+    total_xp = 150 + earned_xp
+    combat_xp = int(total_xp * (1 - non_combat_pct))
+    non_combat_xp = total_xp - combat_xp
+
+    # Compute combat_spent by comparing budget before and after
+    initial_budget = combat_xp
+    # Recalculate remaining budget from stats
+    ring_values = stats.ring_values
+    base_rings: dict[str, int] = {
+        "air": 2, "fire": 2, "earth": 2, "water": 2, "void": 2,
+    }
+    if school_ring is not None:
+        base_rings[school_ring.value.lower()] = 3
+    ring_cost = sum(
+        sum(ring_raise_cost(v) for v in range(base_rings[r] + 1, ring_values[r] + 1))
+        for r in ring_values
+    )
+    skill_cost = sum(
+        advanced_skill_raise_cost(v) for v in range(1, stats.attack + 1)
+    ) + sum(
+        advanced_skill_raise_cost(v) for v in range(1, stats.parry + 1)
+    )
+    combat_spent = ring_cost + skill_cost
     xp_spent = combat_spent + non_combat_xp
 
     rings = Rings(
@@ -138,8 +202,8 @@ def build_character_from_xp(
     )
 
     skills = [
-        Skill(name="Attack", rank=attack, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
-        Skill(name="Parry", rank=parry, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        Skill(name="Attack", rank=stats.attack, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+        Skill(name="Parry", rank=stats.parry, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
     ]
 
     return Character(

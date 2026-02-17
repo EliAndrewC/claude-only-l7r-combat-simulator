@@ -55,6 +55,13 @@ class Skill(BaseModel):
     ring: RingName = RingName.AIR  # Associated ring for rolls
 
 
+class ProfessionAbility(BaseModel):
+    """A single profession ability with rank 1-2."""
+
+    number: int = Field(ge=1, le=10)
+    rank: int = Field(default=1, ge=1, le=2)
+
+
 class Character(BaseModel):
     """A complete character in the L7R system."""
 
@@ -68,6 +75,7 @@ class Character(BaseModel):
     xp_total: int = Field(default=150, ge=0)
     xp_spent: int = Field(default=0, ge=0)
     void_points: int = Field(default=0, ge=0)
+    profession_abilities: list[ProfessionAbility] = Field(default_factory=list)
 
     @property
     def void_points_max(self) -> int:
@@ -85,3 +93,10 @@ class Character(BaseModel):
             if skill.name.lower() == name.lower():
                 return skill
         return None
+
+    def ability_rank(self, ability_number: int) -> int:
+        """Return the rank of a profession ability, or 0 if not present."""
+        for ab in self.profession_abilities:
+            if ab.number == ability_number:
+                return ab.rank
+        return 0

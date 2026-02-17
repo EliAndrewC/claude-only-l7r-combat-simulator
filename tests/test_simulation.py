@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from src.engine.combat import create_combat_log
 from src.engine.simulation import (
+    _apply_ability4_rounding,
     _damage_pool_str,
     _format_pool_with_overflow,
     _resolve_attack,
@@ -15,7 +16,7 @@ from src.engine.simulation import (
     _tiebreak_key,
     simulate_combat,
 )
-from src.models.character import Character, Ring, RingName, Rings, Skill, SkillType
+from src.models.character import Character, ProfessionAbility, Ring, RingName, Rings, Skill, SkillType
 from src.models.combat import ActionType, FighterStatus
 from src.models.weapon import Weapon, WeaponType
 
@@ -33,6 +34,28 @@ def _make_character(name: str, **ring_overrides: int) -> Character:
             Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
             Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
         ],
+    )
+
+
+def _make_waveman(
+    name: str,
+    abilities: list[tuple[int, int]] | None = None,
+    **ring_overrides: int,
+) -> Character:
+    """Helper to create a Wave Man character with specific abilities."""
+    kwargs = {}
+    for ring_name in ["air", "fire", "earth", "water", "void"]:
+        val = ring_overrides.get(ring_name, 2)
+        kwargs[ring_name] = Ring(name=RingName(ring_name.capitalize()), value=val)
+    pa = [ProfessionAbility(number=n, rank=r) for n, r in (abilities or [])]
+    return Character(
+        name=name,
+        rings=Rings(**kwargs),
+        skills=[
+            Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ],
+        profession_abilities=pa,
     )
 
 
@@ -1504,3 +1527,642 @@ class TestDamageOverflowAnnotations:
                 # positional: roll_damage(attacker, weapon_rolled, weapon_kept, extra_dice)
                 args = mock_damage.call_args[0]
                 assert args[3] == 3
+
+
+# ===================================================================
+# Wave Man Ability Integration Tests
+# ===================================================================
+
+
+class TestWaveManInitiative:
+    """Ability 6: Extra unkept die on initiative."""
+
+    def test_ability6_extra_unkept_die(self) -> None:
+        """Ability 6 rank 1 means roll_initiative gets extra_unkept=1."""
+        a = _make_waveman("WM", abilities=[(6, 1)], void=3)
+        b = _make_character("Samurai", void=3)
+
+        # WM: void=3, extra_unkept=1 → rolls 5 dice, drop 2 highest, keep 3
+        # Samurai: void=3, extra_unkept=0 → rolls 4, drop 1, keep 3
+        with patch("src.engine.simulation.roll_initiative") as mock_init:
+            from src.models.combat import CombatAction
+            mock_init.side_effect = [
+                CombatAction(
+                    phase=0, actor="WM", action_type=ActionType.INITIATIVE,
+                    dice_rolled=[2, 3, 5, 7, 9], dice_kept=[2, 3, 5],
+                    total=0, description="WM acts in phases 2, 3, 5",
+                ),
+                CombatAction(
+                    phase=0, actor="Samurai", action_type=ActionType.INITIATIVE,
+                    dice_rolled=[3, 4, 6, 8], dice_kept=[3, 4, 6],
+                    total=0, description="Samurai acts in phases 3, 4, 6",
+                ),
+            ]
+            simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+            # Verify WM's call includes extra_unkept=1
+            wm_call = mock_init.call_args_list[0]
+            assert wm_call[1].get("extra_unkept") == 1 or wm_call.kwargs.get("extra_unkept") == 1
+
+    def test_ability6_rank2_extra(self) -> None:
+        """Ability 6 rank 2 passes extra_unkept=2."""
+        a = _make_waveman("WM", abilities=[(6, 2)], void=2)
+        b = _make_character("B")
+        with patch("src.engine.simulation.roll_initiative") as mock_init:
+            from src.models.combat import CombatAction
+            mock_init.side_effect = [
+                CombatAction(
+                    phase=0, actor="WM", action_type=ActionType.INITIATIVE,
+                    dice_rolled=[1, 2, 3, 8, 9], dice_kept=[1, 2],
+                    total=0, description="WM acts in phases 1, 2",
+                ),
+                CombatAction(
+                    phase=0, actor="B", action_type=ActionType.INITIATIVE,
+                    dice_rolled=[3, 5, 7], dice_kept=[3, 5],
+                    total=0, description="B acts in phases 3, 5",
+                ),
+            ]
+            simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+            wm_call = mock_init.call_args_list[0]
+            assert wm_call[1].get("extra_unkept") == 2 or wm_call.kwargs.get("extra_unkept") == 2
+
+
+class TestWaveManAttackReroll:
+    """Ability 1: Free raise on miss, auto-parry."""
+
+    def test_ability1_raises_missed_attack(self) -> None:
+        """Ability 1 rank 1 adds +5 to a missed attack."""
+        a = _make_waveman("WM", abilities=[(1, 1)], fire=3, earth=3, void=2)
+        b = _make_character("Def", fire=2, earth=3, void=2)
+        b.skills = [Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"WM": [5], "Def": [7]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            # Attack misses by 3 (total=2, tn=5). Ability 1 adds +5 → 7 >= 5, hits.
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[2], dice_kept=[2],
+                total=2, tn=5, success=False,
+                description="WM attacks: 5k2 vs TN 5",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="WM deals 18 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            # Attack should be marked as hit with free raise note
+            attack_actions = [a for a in log.actions if a.action_type == ActionType.ATTACK]
+            assert len(attack_actions) == 1
+            assert attack_actions[0].success is True
+            assert "free raise" in attack_actions[0].description.lower()
+
+            # Parry should auto-succeed
+            parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+            assert len(parry_actions) == 1
+            assert parry_actions[0].success is True
+            assert "auto-success" in parry_actions[0].description.lower()
+
+    def test_ability1_no_effect_when_attack_hits(self) -> None:
+        """Ability 1 doesn't trigger when attack already hits."""
+        a = _make_waveman("WM", abilities=[(1, 1)], fire=3, earth=3, void=2)
+        b = _make_character("Def", fire=2, earth=3, void=2)
+        b.skills = []  # No parry
+
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"WM": [5], "Def": [7]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[20], dice_kept=[20],
+                total=20, tn=5, success=True,
+                description="WM attacks",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[10], dice_kept=[10],
+                total=10, description="WM deals 10 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            attack_actions = [a for a in log.actions if a.action_type == ActionType.ATTACK]
+            assert "free raise" not in attack_actions[0].description.lower()
+
+
+class TestWaveManParryTN:
+    """Ability 2: Raises parry TN by 5."""
+
+    def test_ability2_raises_parry_tn(self) -> None:
+        """Ability 2 rank 1 adds +5 to the TN the defender must meet to parry."""
+        a = _make_waveman("WM", abilities=[(2, 1)], fire=3, earth=3, void=2)
+        b = _make_character("Def", fire=2, earth=3, air=3, void=2)
+
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"WM": [5], "Def": [5, 7]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak, \
+             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[20, 15], dice_kept=[20, 15],
+                total=20, tn=15, success=True, description="WM attacks",
+                dice_pool="6k3",
+            )
+            # Parry total = 22. Normal TN would be 20 (attack total).
+            # With ability 2: TN = 20 + 5 = 25. 22 < 25 → fails.
+            mock_rak.return_value = ([12, 10, 8], [12, 10], 22)
+
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+            assert len(parry_actions) == 1
+            assert parry_actions[0].tn == 25  # 20 + 5
+            assert parry_actions[0].success is False
+
+
+class TestWaveManWeaponBoost:
+    """Ability 3: Add rolled die to weapons < 4k2."""
+
+    def test_ability3_boosts_wakizashi(self) -> None:
+        """Ability 3 rank 1 boosts Wakizashi from 3k2 to 4k2."""
+        a = _make_waveman("WM", abilities=[(3, 1)], fire=3, earth=3, void=2)
+        b = _make_character("Def", fire=2, earth=3, void=2)
+        b.skills = []  # No parry
+
+        wakizashi = Weapon(name="Wakizashi", weapon_type=WeaponType.WAKIZASHI, rolled=3, kept=2)
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": wakizashi},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"WM": [5], "Def": [7]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[20], dice_kept=[20],
+                total=20, tn=5, success=True, description="WM attacks",
+                dice_pool="6k3",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="WM deals 18 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            # roll_damage should be called with boosted_rolled=4 (3+1, capped at 4)
+            mock_damage.assert_called_once()
+            args = mock_damage.call_args[0]
+            assert args[1] == 4  # weapon_rolled
+
+    def test_ability3_no_boost_for_katana(self) -> None:
+        """Ability 3 doesn't boost Katana (already 4k2)."""
+        a = _make_waveman("WM", abilities=[(3, 1)], fire=3, earth=3, void=2)
+        b = _make_character("Def", fire=2, earth=3, void=2)
+        b.skills = []
+
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"WM": [5], "Def": [7]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[20], dice_kept=[20],
+                total=20, tn=5, success=True, description="WM attacks",
+                dice_pool="6k3",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="WM deals 18 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            # Katana is already 4k2, no boost
+            args = mock_damage.call_args[0]
+            assert args[1] == 4  # weapon_rolled stays at 4
+
+
+class TestWaveManDamageRounding:
+    """Ability 4: Round damage up to nearest 5 or add 3 if already multiple of 5."""
+
+    def test_ability4_rounds_up(self) -> None:
+        """12 → ceil(12/5)*5 = 15."""
+        total, note = _apply_ability4_rounding(12, 1)
+        assert total == 15
+        assert "12" in note and "15" in note
+
+    def test_ability4_adds_3_on_multiple_of_5(self) -> None:
+        """15 → 15 + 3 = 18."""
+        total, note = _apply_ability4_rounding(15, 1)
+        assert total == 18
+
+    def test_ability4_rank2_double_application(self) -> None:
+        """12 → 15 (round up) → 18 (multiple of 5, +3)."""
+        total, note = _apply_ability4_rounding(12, 2)
+        assert total == 18
+
+    def test_ability4_rank2_non_multiple(self) -> None:
+        """7 → 10 → 13."""
+        total, note = _apply_ability4_rounding(7, 2)
+        assert total == 13
+
+
+class TestWaveManFailedParryBonus:
+    """Ability 9: Recover removed extra dice on failed parry."""
+
+    def test_ability9_recovers_dice(self) -> None:
+        """Ability 9 rank 1 recovers up to 2 removed extra dice."""
+        a = _make_waveman("WM", abilities=[(9, 1)], fire=3, earth=3, void=2)
+        b = _make_character("Def", fire=2, earth=3, air=3, void=2)
+
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"WM": [5], "Def": [5, 7]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_and_keep") as mock_rak, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc, \
+             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+            # Attack total=40, tn=15 → all_extra=5, parry_rank=2 → removed=2
+            # Without ability 9: extra_dice=3
+            # With ability 9 rank 1: bonus_back=min(2, 2*1)=2, extra_dice=3+2=5
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[25, 15], dice_kept=[25, 15],
+                total=40, tn=15, success=True, description="WM attacks",
+                dice_pool="6k3",
+            )
+            mock_rak.return_value = ([10, 8, 5], [10, 8], 18)  # Parry fails
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="WM deals 18 damage",
+                dice_pool="10k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            # roll_damage called with extra_dice=5 (3 base + 2 recovered)
+            mock_damage.assert_called_once()
+            args = mock_damage.call_args[0]
+            assert args[3] == 5
+
+
+class TestWaveManDamageReduction:
+    """Ability 8: Subtract damage when attacker had extra dice."""
+
+    def test_ability8_reduces_damage(self) -> None:
+        """Ability 8 rank 1 subtracts 5 from damage when extras exist."""
+        a = _make_character("Atk", fire=3, earth=3, void=2)
+        b = _make_waveman("WM", abilities=[(8, 1)], fire=2, earth=3, void=2)
+        b.skills = []  # No parry
+
+        log = create_combat_log(["Atk", "WM"], [3, 3])
+        fighters = {
+            "Atk": {"char": a, "weapon": KATANA},
+            "WM": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Atk": [5], "WM": [7]}
+        void_points = {"Atk": 2, "WM": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            # Attack total=25, tn=5 → 4 extra dice → ability 8 triggers
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Atk", action_type=ActionType.ATTACK,
+                dice_rolled=[15, 10], dice_kept=[15, 10],
+                total=25, tn=5, success=True, description="Atk attacks",
+                dice_pool="5k2",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="Atk", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="Atk deals 18 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack(
+                log, 5, fighters["Atk"], fighters["WM"],
+                "Atk", "WM", fighters, actions_remaining, void_points,
+            )
+
+            damage_actions = [a for a in log.actions if a.action_type == ActionType.DAMAGE]
+            assert len(damage_actions) == 1
+            assert damage_actions[0].total == 13  # 18 - 5
+            assert "damage reduction" in damage_actions[0].description.lower()
+
+    def test_ability8_no_reduction_without_extras(self) -> None:
+        """Ability 8 doesn't reduce when there are no extra dice."""
+        a = _make_character("Atk", fire=3, earth=3, void=2)
+        b = _make_waveman("WM", abilities=[(8, 1)], fire=2, earth=3, void=2)
+        b.skills = []
+
+        log = create_combat_log(["Atk", "WM"], [3, 3])
+        fighters = {
+            "Atk": {"char": a, "weapon": KATANA},
+            "WM": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Atk": [5], "WM": [7]}
+        void_points = {"Atk": 2, "WM": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            # Attack total=5, tn=5 → 0 extra dice → no reduction
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Atk", action_type=ActionType.ATTACK,
+                dice_rolled=[5], dice_kept=[5],
+                total=5, tn=5, success=True, description="Atk attacks",
+                dice_pool="5k2",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="Atk", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="Atk deals 18 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack(
+                log, 5, fighters["Atk"], fighters["WM"],
+                "Atk", "WM", fighters, actions_remaining, void_points,
+            )
+
+            damage_actions = [a for a in log.actions if a.action_type == ActionType.DAMAGE]
+            assert damage_actions[0].total == 18  # No reduction
+
+
+class TestWaveManWoundCheckBonus:
+    """Ability 7: Extra unkept dice on wound checks."""
+
+    def test_ability7_passes_extra_rolled(self) -> None:
+        """Ability 7 rank 1 → extra_rolled=2 on wound check."""
+        a = _make_character("Atk", fire=3, earth=3, void=2)
+        b = _make_waveman("WM", abilities=[(7, 1)], fire=2, earth=3, water=3, void=2)
+        b.skills = []
+
+        log = create_combat_log(["Atk", "WM"], [3, 3])
+        fighters = {
+            "Atk": {"char": a, "weapon": KATANA},
+            "WM": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Atk": [5], "WM": [7]}
+        void_points = {"Atk": 2, "WM": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="Atk", action_type=ActionType.ATTACK,
+                dice_rolled=[20], dice_kept=[20],
+                total=20, tn=5, success=True, description="Atk attacks",
+                dice_pool="6k3",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="Atk", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="Atk deals 18 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 33, [15, 10, 8, 7, 5], [15, 10, 8])
+
+            _resolve_attack(
+                log, 5, fighters["Atk"], fighters["WM"],
+                "Atk", "WM", fighters, actions_remaining, void_points,
+            )
+
+            mock_wc.assert_called_once()
+            _, kwargs = mock_wc.call_args
+            assert kwargs.get("extra_rolled") == 2
+
+
+class TestWaveManWoundCheckTN:
+    """Ability 10: Raises wound check TN, but serious wounds use original TN."""
+
+    def test_ability10_raises_tn(self) -> None:
+        """Ability 10 rank 1 → tn_bonus=5 on wound check."""
+        a = _make_waveman("WM", abilities=[(10, 1)], fire=3, earth=3, void=2)
+        b = _make_character("Def", fire=2, earth=3, water=3, void=2)
+        b.skills = []
+
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"WM": [5], "Def": [7]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[20], dice_kept=[20],
+                total=20, tn=5, success=True, description="WM attacks",
+                dice_pool="6k3",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="WM deals 18 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (False, 12, [8, 4], [8, 4])
+
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            mock_wc.assert_called_once()
+            _, kwargs = mock_wc.call_args
+            assert kwargs.get("tn_bonus") == 5
+
+
+class TestWaveManCrippledReroll:
+    """Ability 5: Free reroll of 10s when crippled (NOT on initiative)."""
+
+    def test_ability5_never_on_initiative(self) -> None:
+        """Ability 5 should NOT affect initiative rolls."""
+        a = _make_waveman("WM", abilities=[(5, 1)], void=3)
+        b = _make_character("B", void=3)
+        # Even if WM is crippled, initiative should not get reroll
+        # Since initiative is handled by roll_initiative (not _resolve_attack),
+        # ability 5 is never called for initiative. This is by design.
+        from src.engine.combat import roll_initiative
+        with patch("src.engine.combat.roll_die", side_effect=[10, 5, 3, 2]):
+            action = roll_initiative(a)
+            # The 10 should remain as 10 (no reroll)
+            assert 10 in action.dice_rolled or 10 in action.dice_kept or action.dice_rolled[-1] == 10
+
+    def test_ability5_rerolls_in_attack(self) -> None:
+        """Ability 5 rerolls 10s on attack when crippled."""
+        a = _make_waveman("WM", abilities=[(5, 1)], fire=3, earth=2, void=3)
+        b = _make_character("Def", fire=2, earth=3, void=2)
+        b.skills = []
+
+        log = create_combat_log(["WM", "Def"], [2, 3])
+        log.wounds["WM"].serious_wounds = 2  # Crippled
+
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"WM": [5], "Def": [7]}
+        void_points = {"WM": 0, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.reroll_tens") as mock_reroll, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            # Attack misses with a 10 showing
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[10, 7, 5, 3, 2], dice_kept=[10, 7, 5],
+                total=22, tn=25, success=False,
+                description="WM attacks: 5k3 vs TN 5",
+            )
+            # Free reroll raises total high enough
+            mock_reroll.return_value = ([18, 7, 5, 3, 2], [18, 7, 5], 30)
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[10], dice_kept=[10],
+                total=10, description="WM deals 10 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 20, [15], [15])
+
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            # Free reroll should have been called with max_reroll=1
+            mock_reroll.assert_called_once()
+            args, kwargs = mock_reroll.call_args
+            assert kwargs.get("max_reroll") == 1 or args[2] == 1
+            # Void should NOT have been spent (ability 5 is free)
+            assert void_points["WM"] == 0
+
+
+class TestWaveManSmokeTest:
+    """Full simulation smoke tests with Wave Man characters."""
+
+    def test_two_wavemen_fight(self) -> None:
+        """Two Wave Men can fight 20 rounds without errors."""
+        a = _make_waveman("WM1", abilities=[(1, 1), (4, 1), (7, 1)], fire=3, earth=3, void=3)
+        b = _make_waveman("WM2", abilities=[(2, 1), (8, 1), (10, 1)], fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+        assert log.combatants == ["WM1", "WM2"]
+
+    def test_waveman_vs_samurai(self) -> None:
+        """A Wave Man vs a regular samurai completes without errors."""
+        a = _make_waveman("WM", abilities=[(1, 1), (3, 1), (6, 1)], fire=3, earth=3, void=3)
+        b = _make_character("Samurai", fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+        assert log.combatants == ["WM", "Samurai"]
+
+    def test_full_ability_waveman(self) -> None:
+        """Wave Man with all 10 abilities at rank 2 runs without error."""
+        all_abilities = [(i, 2) for i in range(1, 11)]
+        a = _make_waveman("WM", abilities=all_abilities, fire=4, earth=4, void=4, water=4, air=4)
+        b = _make_character("Samurai", fire=4, earth=4, void=4, water=4, air=4)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["WM", "Samurai"]

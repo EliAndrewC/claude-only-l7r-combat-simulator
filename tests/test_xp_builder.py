@@ -3,9 +3,11 @@
 import pytest
 
 from src.engine.xp_builder import (
+    ComputedStats,
     DEFAULT_COMBAT_PROGRESSION,
     advanced_skill_raise_cost,
     build_character_from_xp,
+    compute_stats_from_xp,
     ring_raise_cost,
 )
 from src.models.character import RingName
@@ -49,8 +51,8 @@ class TestDefaultProgression:
         assert isinstance(DEFAULT_COMBAT_PROGRESSION, list)
         assert all(isinstance(s, str) for s in DEFAULT_COMBAT_PROGRESSION)
 
-    def test_progression_starts_with_void(self) -> None:
-        assert DEFAULT_COMBAT_PROGRESSION[0] == "void"
+    def test_progression_starts_with_parry(self) -> None:
+        assert DEFAULT_COMBAT_PROGRESSION[0] == "parry"
 
     def test_progression_contains_all_rings_and_skills(self) -> None:
         entries = set(DEFAULT_COMBAT_PROGRESSION)
@@ -61,27 +63,27 @@ class TestBuildCharacterFromXP:
     """Tests for the main builder function."""
 
     def test_zero_earned_xp_with_school_ring(self) -> None:
-        """0 earned XP, 150 total, 120 combat, school ring Fire."""
+        """0 earned XP, 150 total, 120 combat, school ring Fire.
+
+        Skills reach parry 4 / attack 3 before rings advance, then all
+        rings reach 3 and the school ring reaches 4.
+        """
         char = build_character_from_xp(
             name="Test", earned_xp=0, school_ring=RingName.FIRE
         )
-        assert char.rings.void.value == 4
-        assert char.rings.water.value == 4
+        assert char.rings.void.value == 3
+        assert char.rings.water.value == 3
         assert char.rings.earth.value == 3
         assert char.rings.fire.value == 4
-        assert char.rings.air.value == 2
-        assert char.get_skill("Attack").rank == 2
-        assert char.get_skill("Parry").rank == 1
+        assert char.rings.air.value == 3
+        assert char.get_skill("Attack").rank == 3
+        assert char.get_skill("Parry").rank == 4
 
     def test_100_earned_xp_with_school_ring(self) -> None:
         """100 earned XP, 250 total, 200 combat, school ring Fire.
 
-        Tracing through progression with 200 budget:
-        Cycle 1 (void,water,earth,fire,attack,parry): 15+15+15+20+4+4=73, budget=127
-        Cycle 2 (void,water,attack,parry): 20+20+4+4=48, budget=79
-        Cycle 3 (air,earth,attack,parry): 15+20+6+6=47, budget=32
-        Cycle 4 (fire,void,water,attack,parry): fire 4→5=25, budget=7. rest skipped.
-        Final: Void 4, Water 4, Earth 4, Fire 5, Air 3, Attack 3, Parry 3
+        Skills reach parry 5 / attack 4 first, then rings advance.
+        Final: Void 4, Water 4, Earth 4, Fire 4, Air 3, Attack 4, Parry 5
         """
         char = build_character_from_xp(
             name="Test", earned_xp=100, school_ring=RingName.FIRE
@@ -89,10 +91,10 @@ class TestBuildCharacterFromXP:
         assert char.rings.void.value == 4
         assert char.rings.water.value == 4
         assert char.rings.earth.value == 4
-        assert char.rings.fire.value == 5
+        assert char.rings.fire.value == 4
         assert char.rings.air.value == 3
-        assert char.get_skill("Attack").rank == 3
-        assert char.get_skill("Parry").rank == 3
+        assert char.get_skill("Attack").rank == 4
+        assert char.get_skill("Parry").rank == 5
 
     def test_350_earned_xp_maxes_stats(self) -> None:
         """350 earned XP, 500 total, 400 combat, school ring Fire."""
@@ -117,9 +119,9 @@ class TestBuildCharacterFromXP:
             earned_xp=0, school_ring=RingName.FIRE, non_combat_pct=0.20
         )
         # total=150, combat_xp=120, non_combat=30
-        # Combat spent: 15+15+15+20+4+4+20+20+4 = 117
-        # xp_spent = 117 + 30 = 147
-        assert char.xp_spent == 147
+        # Combat spent: skills 4+4+4+4+6+6+8 = 36 + rings 15+15+15+20+15 = 80 → 116
+        # xp_spent = 116 + 30 = 146
+        assert char.xp_spent == 146
 
     def test_non_combat_pct_zero_gives_more_stats(self) -> None:
         """0% non-combat means all XP goes to combat."""
@@ -129,34 +131,35 @@ class TestBuildCharacterFromXP:
         char_20pct = build_character_from_xp(
             earned_xp=0, school_ring=RingName.FIRE, non_combat_pct=0.20
         )
-        # With 0% non-combat (150 budget vs 120): more stats
-        assert char_0pct.rings.air.value > char_20pct.rings.air.value
+        # With 0% non-combat (150 budget vs 120): higher skill ranks
+        assert char_0pct.get_skill("Attack").rank > char_20pct.get_skill("Attack").rank
 
     def test_non_combat_pct_zero_stats(self) -> None:
-        """0 earned, 0% non-combat: 150 combat budget, school ring Fire."""
+        """0 earned, 0% non-combat: 150 combat budget, school ring Fire.
+
+        Budget 150: parry1(4) atk1(4) parry2(4) atk2(4) parry3(6) atk3(6)
+        parry4(8) = 36, budget=114. Rings: void3(15) water3(15) earth3(15)
+        fire4(20) air3(15) = 80, budget=34. atk4(8) parry5(10) = 18,
+        budget=16. void4(20)>16 skip ... atk5(10) budget=6.
+        """
         char = build_character_from_xp(
             earned_xp=0, school_ring=RingName.FIRE, non_combat_pct=0.0
         )
-        # Budget 150: void3(15)=135, water3(15)=120, earth3(15)=105,
-        # fire4(20)=85, atk1(4)=81, parry1(4)=77, void4(20)=57,
-        # water4(20)=37, atk2(4)=33, parry2(4)=29, air3(15)=14,
-        # earth4(20)>14 skip, atk3(6)=8, parry3(6)=2
-        assert char.rings.void.value == 4
-        assert char.rings.water.value == 4
+        assert char.rings.void.value == 3
+        assert char.rings.water.value == 3
         assert char.rings.earth.value == 3
         assert char.rings.fire.value == 4
         assert char.rings.air.value == 3
-        assert char.get_skill("Attack").rank == 3
-        assert char.get_skill("Parry").rank == 3
+        assert char.get_skill("Attack").rank == 5
+        assert char.get_skill("Parry").rank == 5
 
     def test_progression_order_respected(self) -> None:
-        """Void should be raised before water (first in progression)."""
+        """Parry is raised before rings (first in progression)."""
         char = build_character_from_xp(
             name="Test", earned_xp=0, school_ring=RingName.FIRE
         )
-        # With limited budget, void gets raised to 4 but air stays at 2
-        # because void appears earlier in the progression
-        assert char.rings.void.value > char.rings.air.value
+        # Parry is prioritised over rings: parry 4 while rings only reach 3
+        assert char.get_skill("Parry").rank > char.rings.void.value
 
     def test_custom_progression(self) -> None:
         """Custom progression only raises specified stats."""
@@ -297,3 +300,36 @@ class TestSchoolRing:
         )
         assert char.rings.fire.value == 5
         assert char.rings.void.value == 5
+
+
+class TestComputeStatsFromXP:
+    """Tests for the compute_stats_from_xp helper."""
+
+    def test_compute_stats_zero_xp(self) -> None:
+        """0 earned XP with no school ring: all rings 2, skills 0-ish."""
+        stats = compute_stats_from_xp(earned_xp=0, non_combat_pct=1.0)
+        # With 100% non-combat, no budget to raise anything
+        assert stats.ring_values == {"air": 2, "fire": 2, "earth": 2, "water": 2, "void": 2}
+        assert stats.attack == 0
+        assert stats.parry == 0
+
+    def test_compute_stats_consistency(self) -> None:
+        """compute_stats_from_xp output matches build_character_from_xp."""
+        for earned_xp in (0, 50, 100, 200, 350):
+            stats = compute_stats_from_xp(
+                earned_xp=earned_xp,
+                school_ring=RingName.FIRE,
+                non_combat_pct=0.20,
+            )
+            char = build_character_from_xp(
+                earned_xp=earned_xp,
+                school_ring=RingName.FIRE,
+                non_combat_pct=0.20,
+            )
+            assert stats.ring_values["air"] == char.rings.air.value
+            assert stats.ring_values["fire"] == char.rings.fire.value
+            assert stats.ring_values["earth"] == char.rings.earth.value
+            assert stats.ring_values["water"] == char.rings.water.value
+            assert stats.ring_values["void"] == char.rings.void.value
+            assert stats.attack == char.get_skill("Attack").rank
+            assert stats.parry == char.get_skill("Parry").rank

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 
-from src.engine.presets import get_preset, list_preset_names
 from src.engine.simulation import simulate_combat
 from src.models.character import Character
 from src.models.combat import CombatLog
@@ -32,12 +31,6 @@ class CombatResponse(BaseModel):
     rounds: int
     total_actions: int
     log: CombatLog
-
-
-class PresetResponse(BaseModel):
-    name: str
-    character: Character
-    weapon_type: WeaponType
 
 
 # --- Endpoints ---
@@ -84,19 +77,3 @@ def list_weapons() -> list[dict]:
         }
         for wt, w in WEAPONS.items()
     ]
-
-
-@app.get("/presets")
-def list_presets() -> list[str]:
-    """List all preset character names."""
-    return list_preset_names()
-
-
-@app.get("/presets/{name}")
-def get_preset_by_name(name: str) -> PresetResponse:
-    """Get a preset character by name."""
-    result = get_preset(name)
-    if result is None:
-        raise HTTPException(status_code=404, detail=f"Preset '{name}' not found")
-    char, wt = result
-    return PresetResponse(name=char.name, character=char, weapon_type=wt)

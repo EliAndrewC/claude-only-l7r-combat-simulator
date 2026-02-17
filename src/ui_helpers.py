@@ -6,12 +6,13 @@ import re
 
 import streamlit as st
 
+from src.engine.waveman import WAVE_MAN_ABILITY_NAMES
 from src.models.character import Character
 from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
 from src.models.weapon import Weapon
 
 # Annotations worth surfacing from action descriptions.
-_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted")
+_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man")
 
 
 def _md_to_html(text: str) -> str:
@@ -99,6 +100,14 @@ def render_character_card(
     if char.skills:
         skills_text = ", ".join(f"{s.name} {s.rank}" for s in char.skills)
         col.markdown(f"**Skills:** {skills_text}")
+
+    if char.profession_abilities:
+        parts = []
+        for ab in char.profession_abilities:
+            name = WAVE_MAN_ABILITY_NAMES.get(ab.number, f"#{ab.number}")
+            suffix = f" (x{ab.rank})" if ab.rank > 1 else ""
+            parts.append(f"{name}{suffix}")
+        col.markdown(f"**Abilities:** {', '.join(parts)}")
 
     col.markdown(f"**Weapon:** {weapon.name} ({weapon.dice_str})")
 

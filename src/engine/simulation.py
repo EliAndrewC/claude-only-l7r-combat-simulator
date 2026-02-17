@@ -15,6 +15,8 @@ from src.engine.combat import (
     roll_damage,
     roll_initiative,
 )
+import math
+
 from src.engine.dice import reroll_tens, roll_and_keep
 from src.models.character import Character, RingName
 from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
@@ -335,8 +337,9 @@ def simulate_combat(
         log.round_number = round_num
 
         # --- Initiative Phase ---
-        init_a = roll_initiative(char_a)
-        init_b = roll_initiative(char_b)
+        # Ability 6: extra unkept die on initiative
+        init_a = roll_initiative(char_a, extra_unkept=char_a.ability_rank(6))
+        init_b = roll_initiative(char_b, extra_unkept=char_b.ability_rank(6))
 
         actions_remaining: dict[str, list[int]] = {
             char_a.name: sorted(init_a.dice_kept),
@@ -414,6 +417,53 @@ def _is_mortally_wounded(log: CombatLog, name: str) -> bool:
     return log.wounds[name].is_mortally_wounded
 
 
+def _apply_ability5_reroll(
+    character: Character,
+    all_dice: list[int],
+    kept_count: int,
+    description_suffix: str = "",
+) -> tuple[list[int], list[int], int, str]:
+    """Apply ability 5 free crippled reroll of 10s (NOT for initiative).
+
+    Args:
+        character: Character with potential ability 5.
+        all_dice: All dice from the roll.
+        kept_count: Number of dice to keep.
+        description_suffix: Accumulated annotation text.
+
+    Returns:
+        Tuple of (all_dice, kept_dice, total, description_suffix).
+    """
+    rank = character.ability_rank(5)
+    if rank > 0 and any(d == 10 for d in all_dice):
+        all_dice, kept_dice, total = reroll_tens(all_dice, kept_count, max_reroll=rank)
+        description_suffix += f" (wave man: free rerolled {rank} ten(s))"
+        return all_dice, kept_dice, total, description_suffix
+    kept_dice = sorted(all_dice, reverse=True)[:kept_count]
+    total = sum(kept_dice)
+    return all_dice, kept_dice, total, description_suffix
+
+
+def _apply_ability4_rounding(total: int, rank: int) -> tuple[int, str]:
+    """Apply ability 4 damage rounding.
+
+    Args:
+        total: Damage total.
+        rank: Ability 4 rank (1 or 2).
+
+    Returns:
+        Tuple of (new_total, annotation).
+    """
+    original = total
+    for _ in range(rank):
+        if total % 5 == 0:
+            total += 3
+        else:
+            total = math.ceil(total / 5) * 5
+    annotation = f" (wave man: damage rounded {original} → {total})"
+    return total, annotation
+
+
 def _resolve_attack(
     log: CombatLog,
     phase: int,
@@ -471,6 +521,18 @@ def _resolve_attack(
     attack_action.phase = phase
     attack_action.target = defender_name
 
+    # Ability 5: Free crippled reroll on attack (before void reroll)
+    if attacker_crippled and not attack_action.success:
+        new_all, new_kept, new_total, note = _apply_ability5_reroll(
+            attacker, attack_action.dice_rolled, len(attack_action.dice_kept),
+        )
+        if note:
+            attack_action.dice_rolled = new_all
+            attack_action.dice_kept = new_kept
+            attack_action.total = new_total
+            attack_action.success = new_total >= tn
+            attack_action.description += note
+
     # Feature 2: Crippled void reroll on attack
     if attacker_crippled and not attack_action.success:
         has_tens = any(d == 10 for d in attack_action.dice_rolled)
@@ -485,6 +547,17 @@ def _resolve_attack(
             attack_action.total = new_total
             attack_action.success = new_total >= tn
             attack_action.description += " (void: rerolled 10s)"
+
+    # Ability 1: Attack reroll — if attack misses, add 5 * rank
+    parry_auto_succeeds = False
+    ab1_rank = attacker.ability_rank(1)
+    if not attack_action.success and ab1_rank > 0:
+        boosted_total = attack_action.total + 5 * ab1_rank
+        if boosted_total >= tn:
+            attack_action.total = boosted_total
+            attack_action.success = True
+            parry_auto_succeeds = True
+            attack_action.description += f" (wave man: +{5 * ab1_rank} free raise)"
 
     attack_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points)
     log.add_action(attack_action)
@@ -504,6 +577,34 @@ def _resolve_attack(
     parry_attempted = False
     parry_succeeded = False
     is_interrupt = False
+
+    # Ability 1: If parry auto succeeds, log it and skip actual parry roll
+    if parry_auto_succeeds:
+        parry_attempted = True
+        parry_succeeded = True
+        # Consume the parry die if defender had one in this phase
+        if has_action_in_phase and not predeclared:
+            if phase in actions_remaining[defender_name]:
+                actions_remaining[defender_name].remove(phase)
+        parry_action = CombatAction(
+            phase=phase,
+            actor=defender_name,
+            action_type=ActionType.PARRY,
+            target=attacker_name,
+            dice_rolled=[],
+            dice_kept=[],
+            total=0,
+            tn=attack_action.total,
+            success=True,
+            description=f"{defender_name} parries: auto-success (wave man free raise)",
+            dice_pool="",
+        )
+        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points)
+        log.add_action(parry_action)
+        return
+
+    # Ability 2: Parry TN increase
+    ab2_bonus = 5 * attacker.ability_rank(2)
 
     # Determine if defender can parry
     can_parry = False
@@ -551,13 +652,20 @@ def _resolve_attack(
 
         # Feature 4: Pre-declared parry gets +5 bonus (added to total)
         # Interrupts are reactive and never get the pre-declare bonus
-        parry_tn = attack_action.total
+        parry_tn = attack_action.total + ab2_bonus
         parry_bonus = 5 if (predeclared and not is_interrupt) else 0
         parry_bonus_note = " (pre-declared, +5 bonus)" if (predeclared and not is_interrupt) else ""
 
         all_dice, kept_dice, parry_total = roll_and_keep(
             parry_rolled, parry_kept, explode=parry_explode,
         )
+
+        # Ability 5: Free crippled reroll on parry
+        if defender_crippled:
+            all_dice, kept_dice, parry_total, ab5_note = _apply_ability5_reroll(
+                defender, all_dice, parry_kept,
+            )
+            parry_bonus_note += ab5_note
 
         # Feature 2: Crippled void reroll on parry
         if defender_crippled and (parry_total + parry_bonus) < parry_tn:
@@ -573,6 +681,7 @@ def _resolve_attack(
 
         action_type = ActionType.INTERRUPT if is_interrupt else ActionType.PARRY
         interrupt_note = " (interrupt)" if is_interrupt else ""
+        ab2_note = f" (wave man: parry TN +{ab2_bonus})" if ab2_bonus > 0 else ""
         parry_pool = f"{parry_rolled}k{parry_kept} + 5" if predeclared else f"{parry_rolled}k{parry_kept}"
         parry_action = CombatAction(
             phase=phase,
@@ -586,7 +695,7 @@ def _resolve_attack(
             success=parry_succeeded,
             description=(
                 f"{defender_name} parries: {parry_rolled}k{parry_kept} "
-                f"vs TN {parry_tn}{parry_bonus_note}{interrupt_note}"
+                f"vs TN {parry_tn}{ab2_note}{parry_bonus_note}{interrupt_note}"
             ),
             dice_pool=parry_pool,
         )
@@ -615,9 +724,42 @@ def _resolve_attack(
     else:
         extra_dice = all_extra_dice
 
-    damage_action = roll_damage(attacker, weapon.rolled, weapon.kept, extra_dice)
+    # Ability 9: Failed parry bonus — recover some removed extra dice
+    if parry_attempted and not parry_succeeded:
+        ab9_rank = attacker.ability_rank(9)
+        if ab9_rank > 0:
+            removed = min(all_extra_dice, def_parry_rank)
+            bonus_back = min(removed, 2 * ab9_rank)
+            extra_dice += bonus_back
+
+    # Ability 3: Weapon damage boost — add rolled dice if weapon < 4k2
+    boosted_rolled = weapon.rolled
+    ab3_rank = attacker.ability_rank(3)
+    if ab3_rank > 0:
+        if weapon.rolled < 4 or (weapon.rolled >= 4 and weapon.kept < 2):
+            boosted_rolled = min(weapon.rolled + ab3_rank, 4)
+
+    damage_action = roll_damage(attacker, boosted_rolled, weapon.kept, extra_dice)
     damage_action.phase = phase
     damage_action.target = defender_name
+
+    # Ability 4: Damage rounding
+    ab4_rank = attacker.ability_rank(4)
+    damage_total = damage_action.total
+    ab4_note = ""
+    if ab4_rank > 0:
+        damage_total, ab4_note = _apply_ability4_rounding(damage_total, ab4_rank)
+        damage_action.total = damage_total
+        damage_action.description += ab4_note
+
+    # Ability 8: Excessive damage reduction (defensive)
+    ab8_rank = defender.ability_rank(8)
+    had_extra_dice = all_extra_dice > 0 if not parry_attempted else extra_dice > 0
+    if ab8_rank > 0 and had_extra_dice:
+        reduction = 5 * ab8_rank
+        damage_action.total = max(0, damage_action.total - reduction)
+        damage_action.description += f" (wave man: -{reduction} damage reduction)"
+
     log.add_action(damage_action)
 
     # Apply damage as light wounds
@@ -638,14 +780,29 @@ def _resolve_attack(
     )
     void_points[defender_name] -= void_spend
 
+    # Ability 7: Extra unkept dice on wound check
+    ab7_extra = 2 * defender.ability_rank(7)
+    # Ability 10: Wound check TN increase
+    ab10_bonus = 5 * attacker.ability_rank(10)
+
     passed, wc_total, wc_all_dice, wc_kept_dice = make_wound_check(
         wound_tracker, water_value, void_spend=void_spend,
+        extra_rolled=ab7_extra, tn_bonus=ab10_bonus,
     )
+
+    # Ability 5: Free crippled reroll on wound check
+    if not passed and log.wounds[defender_name].is_crippled:
+        wc_all_dice, wc_kept_dice, wc_total, _ = _apply_ability5_reroll(
+            defender, wc_all_dice, water_value + void_spend,
+        )
+        effective_tn = wound_tracker.light_wounds + ab10_bonus
+        if wc_total >= effective_tn:
+            passed = True
 
     void_note = f" ({void_spend} void point spent)" if void_spend else ""
 
     # Record the TN before any conversion modifies light_wounds
-    wc_tn = wound_tracker.light_wounds
+    wc_tn = wound_tracker.light_wounds + ab10_bonus
 
     # Feature 3: Wound check success choice
     convert_note = ""
@@ -661,7 +818,7 @@ def _resolve_attack(
             wound_tracker.light_wounds = 0
             convert_note = " — converted light wounds to 1 serious wound"
 
-    wc_rolled = water_value + 1
+    wc_rolled = water_value + 1 + ab7_extra
     wc_kept = water_value + void_spend
     wc_action = CombatAction(
         phase=phase,

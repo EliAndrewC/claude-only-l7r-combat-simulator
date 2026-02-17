@@ -43,6 +43,40 @@ class TestAppSidebar:
         assert len(at.selectbox) >= 2
 
 
+class TestXPPersistence:
+    def test_xp_restored_from_query_params(self) -> None:
+        """XP slider values are restored from URL query parameters on load."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.query_params["f1_xp"] = "150"
+        at.query_params["f2_xp"] = "200"
+        at.run()
+        assert not at.exception
+        assert at.session_state["f1_earned_xp"] == 150
+        assert at.session_state["f2_earned_xp"] == 200
+
+    def test_xp_synced_to_query_params(self) -> None:
+        """After changing XP slider, value is written to query params."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        # Change fighter 1 XP via slider
+        at.slider(key="f1_earned_xp").set_value(100).run()
+        val = at.query_params["f1_xp"]
+        # AppTest may return a list or a string depending on version
+        if isinstance(val, list):
+            assert val == ["100"]
+        else:
+            assert val == "100"
+
+    def test_invalid_query_param_ignored(self) -> None:
+        """Non-integer query param values are silently ignored."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.query_params["f1_xp"] = "not_a_number"
+        at.run()
+        assert not at.exception
+        # Should fall back to slider default of 0
+        assert at.session_state["f1_earned_xp"] == 0
+
+
 class TestExtractAnnotations:
     """Tests for extract_annotations helper used by _render_action."""
 

@@ -165,7 +165,7 @@ opponent.
 
 **Special Ability:**
 The two allies fighting on your left and right have their TN to be 
-hit raised by 5; this does not stack.
+hit raised by 5.
 
 **First Dan:**
 Roll an extra die on initiative, parry, and wound check rolls.
@@ -186,7 +186,7 @@ minimum of 1.
 
 **Fifth Dan:**
 After making a successful or unsuccessful parry roll, the attacker 
-deals 10 fewer light wounds on their next 2 attacks.
+deals 10 fewer light wounds on their next 2 damage rolls.
 
 
 ## Isawa Duelist School
@@ -240,7 +240,7 @@ Fire
 **Special Ability:**
 Your 10s on initiative rolls are considered to be in a special 
 Phase 0. You may use interrupt actions to attack using iaijutsu, 
-and any Phase 0 attacks use iaijutsu.
+and any Phase 0 attacks must use iaijutsu as their attack skill.
 
 **First Dan:**
 Roll one extra die on double attack, iaijutsu, and initiative rolls.

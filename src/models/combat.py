@@ -65,9 +65,12 @@ class CombatAction(BaseModel):
     dice_kept: list[int] = Field(default_factory=list)
     total: int = 0
     tn: Optional[int] = None
+    base_tn: Optional[int] = None  # Original TN before ability-10 raise (serious wound calc uses this)
     success: Optional[bool] = None
     description: str = ""
     dice_pool: str = ""
+    label: str = ""
+    tn_description: str = ""
     status_after: Optional[dict[str, FighterStatus]] = None
 
 

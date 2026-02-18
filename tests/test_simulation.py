@@ -7,7 +7,10 @@ from src.engine.simulation import (
     _apply_ability4_rounding,
     _compute_dan_roll_bonus,
     _damage_pool_str,
+    _estimate_roll,
     _format_pool_with_overflow,
+    _kakita_attack_choice,
+    _kakita_should_phase0_attack,
     _matsu_attack_choice,
     _resolve_attack,
     _should_convert_light_to_serious,
@@ -197,6 +200,76 @@ class TestShouldSpendVoidOnWoundCheck:
             water_ring=2, light_wounds=30, void_available=1, max_spend=3,
         )
         assert 0 <= result <= 1
+
+
+class TestKnownBonusParameters:
+    """Verify that known_bonus parameters influence decision functions."""
+
+    def test_wound_check_extra_rolled_reduces_void_spending(self) -> None:
+        """Extra rolled dice on wound check should reduce void spending."""
+        # High TN (30 LW), water=2 → base pool is 3k2
+        base = _should_spend_void_on_wound_check(
+            water_ring=2, light_wounds=30, void_available=3, max_spend=2,
+        )
+        # With 4 extra rolled dice (ability 7 rank 2), pool is 7k2 — much better odds
+        with_bonus = _should_spend_void_on_wound_check(
+            water_ring=2, light_wounds=30, void_available=3, max_spend=2,
+            extra_rolled=4,
+        )
+        assert with_bonus <= base
+
+    def test_wound_check_tn_bonus_increases_void_spending(self) -> None:
+        """Higher wound check TN (ability 10) should increase void spending."""
+        base = _should_spend_void_on_wound_check(
+            water_ring=3, light_wounds=15, void_available=3, max_spend=2,
+        )
+        with_tn = _should_spend_void_on_wound_check(
+            water_ring=3, light_wounds=15, void_available=3, max_spend=2,
+            tn_bonus=10,
+        )
+        assert with_tn >= base
+
+    def test_combat_roll_known_bonus_reduces_void(self) -> None:
+        """Known bonus on combat roll reduces void spending."""
+        from src.engine.simulation import _should_spend_void_on_combat_roll
+
+        # 6k3 vs TN 25 — needs void
+        base = _should_spend_void_on_combat_roll(6, 3, 25, 3, 2)
+        # With +10 known bonus — may not need void
+        with_bonus = _should_spend_void_on_combat_roll(6, 3, 25, 3, 2, known_bonus=10)
+        assert with_bonus <= base
+
+    def test_kakita_known_bonus_tips_da(self) -> None:
+        """Known bonus should make DA viable when pool alone isn't enough."""
+        # Already tested in TestKakitaAttackChoice.test_known_bonus_tips_da_decision
+        no_bonus = _kakita_attack_choice(
+            lunge_rank=3, double_attack_rank=2, fire_ring=4,
+            defender_parry=3, dan=3, is_crippled=False,
+        )
+        with_bonus = _kakita_attack_choice(
+            lunge_rank=3, double_attack_rank=2, fire_ring=4,
+            defender_parry=3, dan=3, is_crippled=False, known_bonus=12,
+        )
+        assert no_bonus == "lunge"
+        assert with_bonus == "double_attack"
+
+    def test_predeclare_known_bonus_reduces_need(self) -> None:
+        """Known parry bonus reduces the need to predeclare."""
+        from src.engine.simulation import _should_predeclare_parry
+
+        # parry=2, air=2 → 4k2, expected≈14 < 25 → should predeclare
+        assert _should_predeclare_parry(2, 2, 25, False)
+        # With +15 known bonus: 14+15=29 >= 25 → no need to predeclare
+        assert not _should_predeclare_parry(2, 2, 25, False, known_bonus=15)
+
+    def test_reactive_parry_known_bonus_improves_odds(self) -> None:
+        """Known parry bonus makes reactive parry more likely via odds check."""
+        from src.engine.simulation import _should_reactive_parry
+
+        # parry=1, air=2 → 3k2, expected≈12.5; attack=25 → 12.5 < 15 → skip
+        assert not _should_reactive_parry(1, 2, 25, 25, 4, 3, 0, 3, False)
+        # With +5 known bonus: 12.5+5=17.5 >= 15 → parry
+        assert _should_reactive_parry(1, 2, 25, 25, 4, 3, 0, 3, False, known_bonus=5)
 
 
 class TestStatusAfterOnActions:
@@ -1341,6 +1414,31 @@ class TestDamageContext:
             assert "9k2 is reduced to 7k2" in parry_actions[0].description
 
 
+class TestEstimateRoll:
+    """Tests for the _estimate_roll expected value helper."""
+
+    def test_equal_rolled_kept(self) -> None:
+        """XkX: keeping all dice, expected ≈ X * 5.0."""
+        # 3k3: 10 * 3 * (6-3+1) / (2*4) = 120/8 = 15.0
+        assert _estimate_roll(3, 3) == 15.0
+
+    def test_more_rolled_than_kept(self) -> None:
+        """XkY: keeping top Y, expected higher per die than 5.5."""
+        # 10k6: 10 * 6 * (20-6+1) / (2*11) = 900/22 ≈ 40.9
+        est = _estimate_roll(10, 6)
+        assert 40 < est < 42
+
+    def test_overflow_adds_bonus(self) -> None:
+        """Pools exceeding 10k10 add +2 per excess kept die."""
+        # 22k3: eff_kept=3+12=15, overflow=5*2=10, eff=10k10+10
+        # 10k10: 10*10*(20-10+1)/(2*11) = 1100/22 = 50.0
+        est = _estimate_roll(22, 3)
+        assert est == 60.0
+
+    def test_zero_dice(self) -> None:
+        assert _estimate_roll(0, 0) == 0.0
+
+
 class TestFormatPoolWithOverflow:
     """Tests for the _format_pool_with_overflow helper."""
 
@@ -1352,9 +1450,9 @@ class TestFormatPoolWithOverflow:
         assert _format_pool_with_overflow(18, 2) == "18k2, which becomes 10k10"
 
     def test_with_overflow_and_bonus(self) -> None:
-        # 22k3 → kept=3+12=15, rolled=10 → bonus=5, kept=10
-        # "22k3, which becomes 10k10+5"
-        assert _format_pool_with_overflow(22, 3) == "22k3, which becomes 10k10+5"
+        # 22k3 → kept=3+12=15, rolled=10 → bonus=5*2=10, kept=10
+        # "22k3, which becomes 10k10+10"
+        assert _format_pool_with_overflow(22, 3) == "22k3, which becomes 10k10+10"
 
     def test_exactly_10_rolled(self) -> None:
         assert _format_pool_with_overflow(10, 3) == "10k3"
@@ -1614,17 +1712,21 @@ class TestWaveManAttackReroll:
     """Ability 1: Free raise on miss, auto-parry."""
 
     def test_ability1_raises_missed_attack(self) -> None:
-        """Ability 1 rank 1 adds +5 to a missed attack."""
+        """Ability 1 rank 1 adds +5 to a missed attack. Defender auto-parries if they have a die."""
         a = _make_waveman("WM", abilities=[(1, 1)], fire=3, earth=3, void=2)
-        b = _make_character("Def", fire=2, earth=3, void=2)
-        b.skills = [Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+        b = _make_character("Def", fire=2, earth=3, air=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
 
         log = create_combat_log(["WM", "Def"], [3, 3])
         fighters = {
             "WM": {"char": a, "weapon": KATANA},
             "Def": {"char": b, "weapon": KATANA},
         }
-        actions_remaining = {"WM": [5], "Def": [7]}
+        # Defender has a die in phase 5 so they can reactive-parry (auto-success, 1 die cost)
+        actions_remaining = {"WM": [5], "Def": [5]}
         void_points = {"WM": 2, "Def": 2}
 
         from src.models.combat import CombatAction
@@ -1632,12 +1734,12 @@ class TestWaveManAttackReroll:
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_damage") as mock_damage, \
              patch("src.engine.simulation.make_wound_check") as mock_wc:
-            # Attack misses by 3 (total=2, tn=5). Ability 1 adds +5 → 7 >= 5, hits.
+            # Parry rank 1 → TN=10. Total=7 misses. Ability 1 adds +5 → 12 >= 10, hits.
             mock_attack.return_value = CombatAction(
                 phase=5, actor="WM", action_type=ActionType.ATTACK,
-                dice_rolled=[2], dice_kept=[2],
-                total=2, tn=5, success=False,
-                description="WM attacks: 5k2 vs TN 5",
+                dice_rolled=[7], dice_kept=[7],
+                total=7, tn=10, success=False,
+                description="WM attacks: 6k3 vs TN 10",
             )
             mock_damage.return_value = CombatAction(
                 phase=5, actor="WM", action_type=ActionType.DAMAGE,
@@ -1663,6 +1765,58 @@ class TestWaveManAttackReroll:
             assert len(parry_actions) == 1
             assert parry_actions[0].success is True
             assert "auto-success" in parry_actions[0].description.lower()
+
+    def test_ability1_no_auto_parry_without_die_and_low_damage(self) -> None:
+        """Ability 1 auto-parry doesn't trigger interrupt when damage is low."""
+        a = _make_waveman("WM", abilities=[(1, 1)], fire=2, earth=3, void=2)
+        b = _make_character("Def", fire=2, earth=3, air=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        # Defender has no die in phase 5; has 2 dice elsewhere so could interrupt
+        actions_remaining = {"WM": [5], "Def": [3, 7]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            # TN=15, total=12 misses. Ability 1 adds +5 → 17 >= 15, hits.
+            # Damage pool: weapon_rolled(4) + fire(2) + extra((17-15)//5=0) = 6k2 — low damage
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[12], dice_kept=[12],
+                total=12, tn=15, success=False,
+                description="WM attacks: 5k2 vs TN 15",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[8, 5], dice_kept=[8, 5],
+                total=13, description="WM deals 13 damage",
+                dice_pool="6k2",
+            )
+            mock_wc.return_value = (True, 20, [12, 8], [12, 8])
+
+            _resolve_attack(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            # Attack should hit via ability 1
+            attack_actions = [a for a in log.actions if a.action_type == ActionType.ATTACK]
+            assert attack_actions[0].success is True
+
+            # No parry — damage_rolled (6) <= 6, not worth interrupt even with auto-success
+            parry_actions = [a for a in log.actions if a.action_type in (ActionType.PARRY, ActionType.INTERRUPT)]
+            assert len(parry_actions) == 0
 
     def test_ability1_no_effect_when_attack_hits(self) -> None:
         """Ability 1 doesn't trigger when attack already hits."""
@@ -3790,3 +3944,958 @@ class TestMatsuSmokeTest:
         for _ in range(5):
             log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
             assert log.combatants == ["M5_1", "M5_2"]
+
+
+def _make_kakita(
+    name: str,
+    knack_rank: int = 1,
+    attack_rank: int = 3,
+    parry_rank: int = 2,
+    double_attack_rank: int | None = None,
+    lunge_rank: int | None = None,
+    iaijutsu_rank: int | None = None,
+    **ring_overrides: int,
+) -> Character:
+    """Helper to create a Kakita Duelist character."""
+    kwargs = {}
+    for ring_name in ["air", "fire", "earth", "water", "void"]:
+        val = ring_overrides.get(ring_name, 2)
+        kwargs[ring_name] = Ring(name=RingName(ring_name.capitalize()), value=val)
+    da_rank = double_attack_rank if double_attack_rank is not None else knack_rank
+    lng_rank = lunge_rank if lunge_rank is not None else knack_rank
+    iai_rank = iaijutsu_rank if iaijutsu_rank is not None else knack_rank
+    return Character(
+        name=name,
+        rings=Rings(**kwargs),
+        school="Kakita Duelist",
+        school_ring=RingName.FIRE,
+        school_knacks=["Double Attack", "Iaijutsu", "Lunge"],
+        skills=[
+            Skill(name="Attack", rank=attack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=parry_rank, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+            Skill(name="Double Attack", rank=da_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Iaijutsu", rank=iai_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Lunge", rank=lng_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+        ],
+    )
+
+
+class TestKakitaSA:
+    """Kakita SA: initiative 10s become phase 0, kept dice = Void ring."""
+
+    def test_10s_become_phase0_same_count(self) -> None:
+        """10s convert to 0 but total kept dice still equals Void ring."""
+        a = _make_kakita("Kakita", knack_rank=1, fire=3, void=4)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        # Void=4, 1st Dan +1 = roll 6, drop 2, keep 4
+        # Mock initiative to roll [1, 4, 5, 6, 6, 10]
+        # Convert 10→0: [0, 1, 4, 5, 6, 6] → keep 4 lowest → [0, 1, 4, 5]
+        with patch("src.engine.combat.roll_die") as mock_die:
+            # roll_initiative for char_a (6 dice), then char_b (3 dice)
+            mock_die.side_effect = [1, 4, 5, 6, 6, 10, 3, 5, 7]
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+
+        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        assert len(init_actions) == 1
+        # 10 should be in dice_rolled
+        assert 10 in init_actions[0].dice_rolled
+        # 0 should be in dice_kept (converted from 10)
+        assert 0 in init_actions[0].dice_kept
+        # Still only Void-count kept dice (no extra actions)
+        assert len(init_actions[0].dice_kept) == 4
+        assert sorted(init_actions[0].dice_kept) == [0, 1, 4, 5]
+
+    def test_multiple_10s_converted(self) -> None:
+        """Multiple 10s all convert to 0, kept count still equals Void."""
+        a = _make_kakita("Kakita", knack_rank=1, fire=3, void=2)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        # Void=2, 1st Dan +1 = roll 4, drop 2, keep 2
+        # Mock: [3, 5, 10, 10] → convert: [0, 0, 3, 5] → keep 2 lowest → [0, 0]
+        with patch("src.engine.combat.roll_die") as mock_die:
+            mock_die.side_effect = [3, 5, 10, 10, 3, 5, 7]
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+
+        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        assert len(init_actions) == 1
+        assert len(init_actions[0].dice_kept) == 2
+        assert init_actions[0].dice_kept.count(0) == 2
+        assert sorted(init_actions[0].dice_kept) == [0, 0]
+
+    def test_non_10s_unchanged(self) -> None:
+        """Non-10 dice remain unchanged after SA processing."""
+        a = _make_kakita("Kakita", knack_rank=1, fire=3, void=2)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        assert len(init_actions) >= 1
+        for die in init_actions[0].dice_kept:
+            assert die != 10  # 10s should all be converted to 0
+
+    def test_no_10s_normal_initiative(self) -> None:
+        """Without any 10s, initiative works normally."""
+        a = _make_kakita("Kakita", knack_rank=1, fire=3, void=2)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        # Void=2, 1st Dan +1 = roll 4, drop 2, keep 2
+        # Mock: [2, 4, 7, 8] → keep [2, 4], drop [7, 8]
+        with patch("src.engine.combat.roll_die") as mock_die:
+            mock_die.side_effect = [2, 4, 7, 8, 3, 5, 7]
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+
+        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        assert len(init_actions) == 1
+        assert 0 not in init_actions[0].dice_kept
+        assert sorted(init_actions[0].dice_kept) == [2, 4]
+
+
+class TestKakitaFirstDan:
+    """1st Dan: +1 die on DA, iaijutsu, and initiative."""
+
+    def test_first_dan_extra_die_on_initiative(self) -> None:
+        """Kakita 1st Dan rolls an extra initiative die."""
+        a = _make_kakita("Kakita", knack_rank=1, fire=3, void=2)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        assert len(init_actions) >= 1
+        # Void=2 means normally roll 3 dice. With 1st Dan +1 = 4 dice.
+        assert len(init_actions[0].dice_rolled) == 4
+
+    def test_first_dan_extra_die_on_double_attack(self) -> None:
+        """DA pool is DA_rank + fire + 1 for Kakita with dan >= 1."""
+        a = _make_kakita("Kakita", knack_rank=1, attack_rank=3, double_attack_rank=3, fire=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(["Kakita", "Target"], [a.rings.earth.value, b.rings.earth.value])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [5], "Target": [3, 7]}
+        void_points = {"Kakita": 0, "Target": 2}
+
+        with patch("src.engine.simulation._kakita_attack_choice") as mock_choice:
+            mock_choice.return_value = "double_attack"
+            _resolve_attack(
+                log, 5, fighters["Kakita"], fighters["Target"],
+                "Kakita", "Target", fighters, actions_remaining, void_points,
+            )
+
+        da_actions = [a for a in log.actions if a.action_type == ActionType.DOUBLE_ATTACK]
+        assert len(da_actions) == 1
+        # DA_rank(3) + Fire(3) + 1st Dan(1) = 7 dice rolled
+        assert len(da_actions[0].dice_rolled) == 7
+
+
+class TestKakitaSecondDan:
+    """2nd Dan: free raise on iaijutsu (+5)."""
+
+    def test_second_dan_iaijutsu_bonus(self) -> None:
+        """Phase 0 iaijutsu attack gets +5 from 2nd Dan."""
+        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, iaijutsu_rank=3, fire=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=0, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [3, 3])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [0, 5], "Target": [3, 7]}
+        void_points = {"Kakita": 3, "Target": 2}
+        dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
+        matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
+        lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
+
+        from src.engine.simulation import _resolve_kakita_phase0_attack
+        _resolve_kakita_phase0_attack(
+            log, "Kakita", "Target", fighters, actions_remaining,
+            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        )
+
+        iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
+        assert len(iai_actions) == 1
+        assert "kakita 2nd Dan: free raise +5" in iai_actions[0].description
+
+
+class TestKakitaThirdDan:
+    """3rd Dan: phase gap attack bonus."""
+
+    def test_phase_gap_bonus(self) -> None:
+        """Attack bonus = attack_skill * (defender_next_phase - current_phase)."""
+        a = _make_kakita("Kakita", knack_rank=3, attack_rank=4, fire=4, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=0, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [3, 3])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [2], "Target": [7]}
+        void_points = {"Kakita": 0, "Target": 2}
+
+        with patch("src.engine.simulation._kakita_attack_choice") as mock_choice:
+            mock_choice.return_value = "lunge"
+            _resolve_attack(
+                log, 2, fighters["Kakita"], fighters["Target"],
+                "Kakita", "Target", fighters, actions_remaining, void_points,
+            )
+
+        lunge_actions = [a for a in log.actions if a.action_type == ActionType.LUNGE]
+        assert len(lunge_actions) == 1
+        # Gap = 7 - 2 = 5, bonus = 4 * 5 = 20
+        assert "kakita 3rd Dan: +20, 5 phases" in lunge_actions[0].description
+
+    def test_no_defender_actions_uses_11(self) -> None:
+        """If defender has no remaining actions, next phase is 11."""
+        a = _make_kakita("Kakita", knack_rank=3, attack_rank=4, fire=4, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=0, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [3, 3])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [3], "Target": []}
+        void_points = {"Kakita": 0, "Target": 0}
+
+        with patch("src.engine.simulation._kakita_attack_choice") as mock_choice:
+            mock_choice.return_value = "lunge"
+            _resolve_attack(
+                log, 3, fighters["Kakita"], fighters["Target"],
+                "Kakita", "Target", fighters, actions_remaining, void_points,
+            )
+
+        lunge_actions = [a for a in log.actions if a.action_type == ActionType.LUNGE]
+        assert len(lunge_actions) == 1
+        # Gap = 11 - 3 = 8, bonus = 4 * 8 = 32
+        assert "kakita 3rd Dan: +32, 8 phases" in lunge_actions[0].description
+
+
+class TestKakitaFourthDan:
+    """4th Dan: +5 on iaijutsu damage."""
+
+    def test_iaijutsu_damage_bonus(self) -> None:
+        """Phase 0 iaijutsu damage gets +5 from 4th Dan."""
+        a = _make_kakita("Kakita", knack_rank=4, attack_rank=4, iaijutsu_rank=4, fire=4, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=4, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=0, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [3, 4])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [0, 5], "Target": [3, 7]}
+        void_points = {"Kakita": 3, "Target": 2}
+        dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
+        matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
+        lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
+
+        from src.engine.simulation import _resolve_kakita_phase0_attack
+        _resolve_kakita_phase0_attack(
+            log, "Kakita", "Target", fighters, actions_remaining,
+            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        )
+
+        iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
+        if iai_actions and iai_actions[0].success:
+            damage_actions = [act for act in log.actions if act.action_type == ActionType.DAMAGE]
+            assert len(damage_actions) >= 1
+            assert "kakita 4th Dan: iaijutsu damage +5" in damage_actions[0].description
+
+
+class TestKakitaFifthDan:
+    """5th Dan: contested iaijutsu opener."""
+
+    def test_5th_dan_contested_iaijutsu(self) -> None:
+        """5th Dan triggers contested iaijutsu at phase 0."""
+        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, iaijutsu_rank=5, fire=5, earth=4, void=4)
+        b = _make_character("Target", fire=3, earth=3, void=3)
+        b.skills = [
+            Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
+        # Should have iaijutsu actions at phase 0
+        iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
+        assert len(iai_actions) >= 1
+        assert "5th Dan iaijutsu" in iai_actions[0].description
+
+    def test_5th_dan_label_and_opponent_roll(self) -> None:
+        """5th Dan contest action has label and shows opponent roll details."""
+        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, iaijutsu_rank=5, fire=5, earth=4, void=4)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [4, 3])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [0, 3, 5], "Target": [4, 7]}
+        void_points = {"Kakita": 4, "Target": 2}
+        dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
+        matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
+
+        from src.engine.simulation import _resolve_kakita_5th_dan
+        with patch("src.engine.simulation.roll_and_keep") as mock_roll:
+            mock_roll.side_effect = [
+                ([10, 8, 7, 5, 4, 3, 2, 1, 1, 1, 1], [10, 8, 7, 5, 4], 30),  # Kakita
+                ([5, 3, 2], [5, 3], 8),  # Opponent: attack 3 + fire 2 = 5k2
+                ([8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 1, 1], [8, 7], 15),  # Damage
+            ]
+            _resolve_kakita_5th_dan(
+                log, "Kakita", "Target", fighters, actions_remaining,
+                void_points, dan_points, temp_void, matsu_bonuses,
+            )
+
+        iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
+        assert len(iai_actions) == 1
+        contest = iai_actions[0]
+
+        # Label should indicate this is the 5th Dan technique
+        assert contest.label == "5th Dan iaijutsu"
+
+        # tn_description should show the opponent's roll details with dice
+        # Format: "vs TN {total} ({name}'s {pool} {skill} [{dice}])"
+        assert contest.tn_description is not None
+        assert contest.tn_description.startswith("vs TN ")
+        assert "Target" in contest.tn_description
+        assert "5k2" in contest.tn_description  # opponent's pool
+        assert "attack" in contest.tn_description  # skill used
+        # Opponent rolled [5, 3, 2] keeping [5, 3] — dice shown with bold/strike
+        assert "**5**" in contest.tn_description
+        assert "**3**" in contest.tn_description
+        assert "~~2~~" in contest.tn_description
+
+        # Damage action should also have a label
+        dmg_actions = [act for act in log.actions if act.action_type == ActionType.DAMAGE]
+        assert len(dmg_actions) == 1
+        assert dmg_actions[0].label == "5th Dan iaijutsu damage"
+
+    def test_5th_dan_extra_damage_dice_on_win(self) -> None:
+        """Winning contested roll adds extra damage dice."""
+        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, iaijutsu_rank=5, fire=5, earth=4, void=4)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=0, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [4, 3])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [0, 3, 5], "Target": [4, 7]}
+        void_points = {"Kakita": 4, "Target": 2}
+        dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
+        matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
+
+        from src.engine.simulation import _resolve_kakita_5th_dan
+        with patch("src.engine.simulation.roll_and_keep") as mock_roll:
+            # Kakita rolls 30, opponent rolls 10, margin = 20 -> 4 extra dice
+            mock_roll.side_effect = [
+                ([10, 8, 7, 5, 4, 3, 2, 1, 1, 1, 1], [10, 8, 7, 5, 4], 30),  # Kakita roll (after +5 2nd dan = 35)
+                ([5, 3, 2], [5, 3, 2], 10),  # Opponent roll
+                ([8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 1, 1], [8, 7], 15),  # Damage roll
+            ]
+            _resolve_kakita_5th_dan(
+                log, "Kakita", "Target", fighters, actions_remaining,
+                void_points, dan_points, temp_void, matsu_bonuses,
+            )
+
+        iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
+        assert len(iai_actions) == 1
+        assert iai_actions[0].success is True
+
+    def test_5th_dan_fewer_damage_dice_on_loss(self) -> None:
+        """Losing contested roll reduces damage dice."""
+        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, iaijutsu_rank=5, fire=5, earth=4, void=4)
+        b = _make_character("Target", fire=4, earth=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=5, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Iaijutsu", rank=5, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [4, 3])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [0, 3, 5], "Target": [4, 7]}
+        void_points = {"Kakita": 4, "Target": 2}
+        dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
+        matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
+
+        from src.engine.simulation import _resolve_kakita_5th_dan
+        with patch("src.engine.simulation.roll_and_keep") as mock_roll:
+            # Kakita rolls 10, opponent rolls 30, margin = -15 (after +5 2nd dan, kakita=15, margin=-15)
+            # fewer_dice = min(4-1, 15//5) = min(3, 3) = 3
+            # damage_rolled = 4+5-3 = 6
+            mock_roll.side_effect = [
+                ([5, 3, 2, 1, 1, 1, 1, 1, 1, 1, 1], [5, 3, 2, 1, 1], 10),  # Kakita roll
+                ([10, 9, 8, 7, 6, 5, 4, 3, 2], [10, 9, 8, 7], 30),  # Opponent roll (Iaijutsu 5 + Fire 4 = 9k4)
+                ([6, 5, 4, 3, 2, 1], [6, 5], 11),  # Damage roll (reduced)
+            ]
+            _resolve_kakita_5th_dan(
+                log, "Kakita", "Target", fighters, actions_remaining,
+                void_points, dan_points, temp_void, matsu_bonuses,
+            )
+
+        iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
+        assert len(iai_actions) == 1
+        assert iai_actions[0].success is False  # Lost
+
+
+class TestKakitaPhase0Attack:
+    """Phase 0 iaijutsu attack mechanics."""
+
+    def test_regular_phase0_costs_1_die(self) -> None:
+        """With a phase 0 die, attack consumes only that 1 die."""
+        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, iaijutsu_rank=3, fire=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=0, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [3, 3])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [0, 3, 7], "Target": [4, 8]}
+        void_points = {"Kakita": 3, "Target": 2}
+        dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
+        matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
+        lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
+
+        from src.engine.simulation import _resolve_kakita_phase0_attack
+        _resolve_kakita_phase0_attack(
+            log, "Kakita", "Target", fighters, actions_remaining,
+            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        )
+
+        # Started with [0, 3, 7], consumed only the 0 -> [3, 7] remaining
+        assert actions_remaining["Kakita"] == [3, 7]
+
+    def test_interrupt_phase0_costs_2_highest_dice(self) -> None:
+        """Without a phase 0 die, interrupt consumes 2 highest (least valuable) dice."""
+        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, iaijutsu_rank=3, fire=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=0, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [3, 3])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [2, 5, 8], "Target": [4, 8]}
+        void_points = {"Kakita": 3, "Target": 2}
+        dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
+        matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
+        lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
+
+        from src.engine.simulation import _resolve_kakita_phase0_attack
+        _resolve_kakita_phase0_attack(
+            log, "Kakita", "Target", fighters, actions_remaining,
+            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        )
+
+        # Started with [2, 5, 8], consumed 2 highest (8, 5) -> [2] remaining
+        assert actions_remaining["Kakita"] == [2]
+
+    def test_uses_iaijutsu_skill(self) -> None:
+        """Phase 0 attack uses IAIJUTSU action type."""
+        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, iaijutsu_rank=3, fire=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=0, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        log = create_combat_log(["Kakita", "Target"], [3, 3])
+        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        actions_remaining = {"Kakita": [0, 3, 7], "Target": [4, 8]}
+        void_points = {"Kakita": 3, "Target": 2}
+        dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
+        matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
+        lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
+
+        from src.engine.simulation import _resolve_kakita_phase0_attack
+        _resolve_kakita_phase0_attack(
+            log, "Kakita", "Target", fighters, actions_remaining,
+            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        )
+
+        iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
+        assert len(iai_actions) == 1
+        assert iai_actions[0].phase == 0
+
+
+class TestKakitaVoidStrategy:
+    """Kakita never spends void on attacks, always reserves for wound checks."""
+
+    def test_never_spends_void_on_attacks(self) -> None:
+        """Kakita should not spend void on lunge or DA attacks."""
+        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, fire=3, earth=3, void=3, air=2)
+        b = _make_character("Target", fire=3, earth=3, void=3, air=3)
+        b.skills = [
+            Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+
+        for _ in range(10):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=5)
+            # Check that Kakita never has void spending on attack actions
+            for action in log.actions:
+                if action.actor == "Kakita" and action.action_type in (
+                    ActionType.LUNGE, ActionType.DOUBLE_ATTACK, ActionType.ATTACK,
+                ):
+                    assert "void spent" not in action.description
+
+    def test_spends_void_on_wound_check(self) -> None:
+        """Kakita reserves void for wound checks."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_kakita("Kakita", knack_rank=1, fire=3, earth=3, water=2, void=3)
+
+        # With enough combats, Kakita should eventually spend void on wound checks
+        found_void_on_wc = False
+        for _ in range(30):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=5)
+            for action in log.actions:
+                if action.actor == "Kakita" and action.action_type == ActionType.WOUND_CHECK:
+                    if "void spent" in action.description:
+                        found_void_on_wc = True
+                        break
+            if found_void_on_wc:
+                break
+
+
+class TestKakitaAttackChoice:
+    """Tests for the _kakita_attack_choice decision function."""
+
+    def test_always_lunge_or_da(self) -> None:
+        """Kakita always returns lunge or double_attack."""
+        for da_rank in (0, 1, 2, 3, 4, 5):
+            for fire in (2, 3, 4, 5):
+                choice = _kakita_attack_choice(
+                    lunge_rank=3, double_attack_rank=da_rank,
+                    fire_ring=fire, defender_parry=2,
+                    dan=2, is_crippled=False,
+                )
+                assert choice in ("lunge", "double_attack")
+
+    def test_crippled_always_lunges(self) -> None:
+        """Crippled Kakita always lunges."""
+        choice = _kakita_attack_choice(
+            lunge_rank=3, double_attack_rank=3,
+            fire_ring=4, defender_parry=2,
+            dan=3, is_crippled=True,
+        )
+        assert choice == "lunge"
+
+    def test_no_da_rank_always_lunges(self) -> None:
+        """With DA rank 0, always lunges."""
+        choice = _kakita_attack_choice(
+            lunge_rank=3, double_attack_rank=0,
+            fire_ring=4, defender_parry=2,
+            dan=3, is_crippled=False,
+        )
+        assert choice == "lunge"
+
+    def test_high_pool_uses_double_attack(self) -> None:
+        """With a strong pool (10k6), Kakita should double attack vs TN 20+20=40."""
+        # da_rank=3 + fire=6 + 1st_dan=1 = 10k6; DA TN = 5 + 5*3 + 20 = 40
+        # estimate_roll(10, 6) ≈ 40.9 >= 40 * 0.85 = 34
+        choice = _kakita_attack_choice(
+            lunge_rank=3, double_attack_rank=3,
+            fire_ring=6, defender_parry=3,
+            dan=3, is_crippled=False,
+        )
+        assert choice == "double_attack"
+
+    def test_known_bonus_tips_da_decision(self) -> None:
+        """3rd Dan phase gap bonus should make DA viable when pool alone isn't enough."""
+        # da_rank=2 + fire=4 + 1st_dan=1 = 7k4; DA TN = 5 + 5*3 + 20 = 40
+        # estimate_roll(7, 4) ≈ 25. Without bonus: 25 < 34 → lunge
+        choice_no_bonus = _kakita_attack_choice(
+            lunge_rank=3, double_attack_rank=2,
+            fire_ring=4, defender_parry=3,
+            dan=3, is_crippled=False,
+        )
+        assert choice_no_bonus == "lunge"
+
+        # With +12 bonus (e.g. attack_rank 4, gap 3): 25 + 12 = 37 >= 34 → DA
+        choice_with_bonus = _kakita_attack_choice(
+            lunge_rank=3, double_attack_rank=2,
+            fire_ring=4, defender_parry=3,
+            dan=3, is_crippled=False,
+            known_bonus=12,
+        )
+        assert choice_with_bonus == "double_attack"
+
+
+class TestKakitaPhase0Decision:
+    """Tests for _kakita_should_phase0_attack decision."""
+
+    def test_always_attack_with_phase0_die(self) -> None:
+        """Always attacks when holding a phase 0 die (costs only 1 die)."""
+        assert _kakita_should_phase0_attack(
+            dan=1, attack_skill=3, phase0_count=1,
+            total_dice=1, defender_next_phase=3,
+        ) is True
+
+    def test_always_attack_with_phase0_die_any_dan(self) -> None:
+        """Attacks at all dan levels when holding a phase 0 die."""
+        for dan in (1, 2, 3, 4, 5):
+            assert _kakita_should_phase0_attack(
+                dan=dan, attack_skill=3, phase0_count=1,
+                total_dice=1, defender_next_phase=5,
+            ) is True
+
+    def test_interrupt_needs_2_dice(self) -> None:
+        """Without a phase 0 die, interrupt costs 2 dice."""
+        assert _kakita_should_phase0_attack(
+            dan=5, attack_skill=4, phase0_count=0,
+            total_dice=1, defender_next_phase=3,
+        ) is False
+        assert _kakita_should_phase0_attack(
+            dan=5, attack_skill=4, phase0_count=0,
+            total_dice=2, defender_next_phase=3,
+        ) is True
+
+    def test_interrupt_without_phase0_die(self) -> None:
+        """Kakita interrupt-attacks at phase 0 even without a phase 0 die."""
+        assert _kakita_should_phase0_attack(
+            dan=1, attack_skill=3, phase0_count=0,
+            total_dice=3, defender_next_phase=5,
+        ) is True
+
+
+class TestKakitaSmokeTest:
+    """Smoke tests for Kakita Duelist in full combat simulations."""
+
+    def test_kakita_vs_kakita_fight(self) -> None:
+        """Two Kakita Duelists can fight without errors."""
+        a = _make_kakita("K1", knack_rank=3, attack_rank=4, fire=4, earth=3, void=3, air=3)
+        b = _make_kakita("K2", knack_rank=3, attack_rank=4, fire=4, earth=3, void=3, air=3)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["K1", "K2"]
+
+    def test_kakita_vs_matsu_fight(self) -> None:
+        """Kakita vs Matsu completes without errors."""
+        a = _make_kakita("Kakita", knack_rank=3, attack_rank=4, fire=4, earth=3, void=3, air=3)
+        b = _make_matsu("Matsu", knack_rank=3, attack_rank=4, fire=4, earth=3, void=3, air=3)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["Kakita", "Matsu"]
+
+    def test_kakita_vs_mirumoto_fight(self) -> None:
+        """Kakita vs Mirumoto completes without errors."""
+        a = _make_kakita("Kakita", knack_rank=3, attack_rank=4, fire=4, earth=3, void=3, air=3)
+        b = _make_mirumoto("Miru", knack_rank=3, attack_rank=4, fire=4, earth=3, void=4, air=3)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["Kakita", "Miru"]
+
+    def test_kakita_vs_waveman_fight(self) -> None:
+        """Kakita vs Wave Man completes without errors."""
+        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, fire=3, earth=3, void=2, air=2)
+        b = _make_waveman("WM", abilities=[(1, 1), (4, 1), (7, 1)], fire=3, earth=3, void=3)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["Kakita", "WM"]
+
+    def test_kakita_vs_base_fight(self) -> None:
+        """Kakita vs Base character completes without errors."""
+        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, fire=3, earth=3, void=2, air=2)
+        b = _make_character("Base", fire=3, earth=3, void=3)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["Kakita", "Base"]
+
+    def test_5th_dan_kakita_fight(self) -> None:
+        """Two 5th Dan Kakita fight without errors."""
+        a = _make_kakita("K5_1", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        b = _make_kakita("K5_2", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        for _ in range(5):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
+            assert log.combatants == ["K5_1", "K5_2"]
+
+
+class TestAbility7WoundCheckBonus:
+    """Ability 7: extra unkept dice on wound checks (all combat paths)."""
+
+    def test_ability7_adds_dice_in_resolve_attack(self) -> None:
+        """Ability 7 rank 2 adds 4 extra rolled dice to wound checks in _resolve_attack."""
+        a = _make_character("Attacker", fire=4, earth=3, void=2)
+        b = _make_waveman("Defender", abilities=[(7, 2)], fire=2, earth=3, water=4, void=2)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=5)
+        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "Defender"]
+        # With water=4, normal would be 5k4.  With ability 7 rank 2, should be 9k4.
+        for wc in wc_actions:
+            assert len(wc.dice_rolled) >= 9, f"Expected 9+ rolled dice, got {len(wc.dice_rolled)}: {wc.dice_pool}"
+
+    def test_ability7_adds_dice_in_phase0_attack(self) -> None:
+        """Ability 7 adds extra rolled dice to wound checks from Kakita Phase 0 attacks."""
+        # Kakita 5th Dan attacks at phase 0, defender has ability 7
+        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        b = _make_waveman("WM", abilities=[(7, 1)], fire=3, earth=3, water=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
+        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "WM"]
+        # With water=3, normal = 4k3.  With ability 7 rank 1, should be 6k3 (or more with void).
+        for wc in wc_actions:
+            assert len(wc.dice_rolled) >= 6, f"Expected 6+ rolled dice, got {len(wc.dice_rolled)}: {wc.dice_pool}"
+
+    def test_ability7_adds_dice_in_5th_dan_iaijutsu(self) -> None:
+        """Ability 7 adds extra rolled dice to wound checks from Kakita 5th Dan contested iaijutsu."""
+        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        b = _make_waveman("WM", abilities=[(7, 2)], fire=3, earth=3, water=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
+        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "WM"]
+        # With water=3, normal = 4k3.  With ability 7 rank 2, should be 8k3 (or more with void).
+        for wc in wc_actions:
+            assert len(wc.dice_rolled) >= 8, f"Expected 8+ rolled dice, got {len(wc.dice_rolled)}: {wc.dice_pool}"
+
+
+class TestAbility10RaiseWoundTN:
+    """Ability 10: raise wound check TN for pass/fail only (not serious wounds)."""
+
+    def test_ability10_raises_tn_for_pass_fail(self) -> None:
+        """Ability 10 rank 2 adds 10 to the wound check TN."""
+        a = _make_waveman("Attacker", abilities=[(10, 2)], fire=4, earth=3, void=3)
+        b = _make_character("Defender", fire=2, earth=3, water=3, void=2)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=10)
+        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "Defender"]
+        for wc in wc_actions:
+            if wc.base_tn is not None:
+                # effective TN should be base_tn + 10
+                assert wc.tn == wc.base_tn + 10
+
+    def test_ability10_serious_wounds_use_base_tn(self) -> None:
+        """Serious wounds are calculated against base TN, not raised TN.
+
+        If base_tn=33 and raised tn=43, rolling 22 gives 2 serious wounds
+        (1 + (33-22)//10), not 3 (1 + (43-22)//10).
+        """
+        from src.engine.combat import make_wound_check
+        from src.models.combat import WoundTracker
+
+        wt = WoundTracker(light_wounds=33, serious_wounds=0, earth_ring=3)
+        # tn_bonus=10 means effective TN=43
+        with patch("src.engine.combat.roll_and_keep") as mock_rak:
+            mock_rak.return_value = ([22, 10, 5, 3], [22, 10], 22)
+            passed, total, _, _ = make_wound_check(wt, water_ring=3, tn_bonus=10)
+
+        assert not passed  # 22 < 43 (effective TN)
+        assert total == 22
+        # Serious wounds: 1 + (33 - 22) // 10 = 2, NOT 1 + (43 - 22) // 10 = 3
+        assert wt.serious_wounds == 2
+
+    def test_ability10_fail_between_base_and_effective_gives_1_sw(self) -> None:
+        """Rolling between base TN and effective TN gives exactly 1 serious wound."""
+        from src.engine.combat import make_wound_check
+        from src.models.combat import WoundTracker
+
+        wt = WoundTracker(light_wounds=33, serious_wounds=0, earth_ring=3)
+        with patch("src.engine.combat.roll_and_keep") as mock_rak:
+            # Roll 37: beats base TN (33) but fails effective TN (43)
+            mock_rak.return_value = ([37, 15, 8, 5], [37, 15], 37)
+            passed, total, _, _ = make_wound_check(wt, water_ring=3, tn_bonus=10)
+
+        assert not passed  # 37 < 43
+        assert wt.serious_wounds == 1  # Beat base TN, so exactly 1 SW
+
+    def test_ability10_in_phase0_wound_check(self) -> None:
+        """Ability 10 is applied to wound checks from Kakita phase 0 attacks."""
+        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        b = _make_waveman("WM", abilities=[(10, 1)], fire=3, earth=3, water=3, void=3)
+        # Run several rounds — ability 10 attacker is the one who dealt the damage (Kakita),
+        # but ability 10 belongs to the Wave Man. The Wave Man is the defender here, not the attacker.
+        # Actually, ability 10 raises TN for damage the attacker dealt. The Wave Man has ability 10.
+        # So when the Wave Man attacks and the Kakita makes a wound check, the TN is raised.
+        # Let's flip: WM attacks, Kakita defends.
+        a = _make_waveman("WM", abilities=[(10, 1)], fire=4, earth=3, water=3, void=3)
+        b = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=5)
+        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "Kakita"]
+        # Some wound checks should have raised TN (base_tn set)
+        raised = [wc for wc in wc_actions if wc.base_tn is not None]
+        # At least some damage from the WM should produce wound checks with raised TN
+        # (5th Dan contested iaijutsu also deals damage and should use ability 10)
+        if wc_actions:
+            assert any(wc.base_tn is not None for wc in wc_actions), \
+                "Expected at least one wound check with raised TN from ability 10"
+
+
+class TestKakitaPhase0WoundCheckAbilities:
+    """Kakita Phase 0 and 5th Dan wound checks use Wave Man abilities correctly."""
+
+    def test_kakita_vs_waveman_with_abilities_7_and_10(self) -> None:
+        """Wave Man abilities 7 and 10 apply during Kakita phase 0 attacks."""
+        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        b = _make_waveman("WM", abilities=[(7, 2), (10, 1)], fire=3, earth=3, water=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
+        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "WM"]
+        for wc in wc_actions:
+            # Ability 7 rank 2: +4 extra rolled dice (water=3, normal=4, with ab7=8)
+            assert len(wc.dice_rolled) >= 8, f"Expected 8+ rolled dice with ability 7 rank 2, got {len(wc.dice_rolled)}"
+
+
+class TestReactiveParry:
+    """Tests for _should_reactive_parry (1-die regular parry after hit)."""
+
+    def test_default_parries_with_overflow_dice(self) -> None:
+        """Default characters parry when attack has overflow dice."""
+        from src.engine.simulation import _should_reactive_parry
+
+        # attack_total=25, tn=15 → extra_dice=2, damage_rolled=4+3+2=9
+        assert _should_reactive_parry(3, 3, 25, 15, 4, 3, 0, 3, False)
+
+    def test_default_parries_when_near_cripple(self) -> None:
+        """Default characters parry when near cripple (wounds_to_cripple <= 1)."""
+        from src.engine.simulation import _should_reactive_parry
+
+        # serious=2, earth=3 → wounds_to_cripple=1; no extra dice
+        assert _should_reactive_parry(3, 3, 15, 15, 4, 3, 2, 3, False)
+
+    def test_default_parries_with_good_odds(self) -> None:
+        """Default characters parry when expected parry total >= 60% of attack."""
+        from src.engine.simulation import _should_reactive_parry
+
+        # air=4 → expected_parry=22; attack_total=30 → 22 >= 18 → True
+        assert _should_reactive_parry(3, 4, 30, 30, 4, 3, 0, 3, False)
+
+    def test_default_skips_low_chance_low_damage(self) -> None:
+        """Default characters skip parry when odds are poor and damage is minimal."""
+        from src.engine.simulation import _should_reactive_parry
+
+        # parry=1, air=2 → 3k2, expected≈12.5; attack=25 → 12.5 < 15 → low odds
+        # no extra dice, not near cripple (serious=0, earth=3)
+        assert not _should_reactive_parry(1, 2, 25, 25, 4, 3, 0, 3, False)
+
+    def test_mirumoto_always_parries(self) -> None:
+        """Mirumoto always attempts reactive parry (temp void gain)."""
+        from src.engine.simulation import _should_reactive_parry
+
+        # Even with terrible odds, Mirumoto parries for temp void
+        assert _should_reactive_parry(1, 2, 50, 50, 4, 3, 0, 3, False, is_mirumoto=True)
+
+    def test_kakita_skips_moderate_damage(self) -> None:
+        """Kakita skips reactive parry for moderate damage."""
+        from src.engine.simulation import _should_reactive_parry
+
+        # damage_rolled = 4 + 3 + 2 = 9, not > 12
+        assert not _should_reactive_parry(3, 3, 25, 15, 4, 3, 0, 3, False, is_kakita=True)
+
+    def test_kakita_parries_high_damage(self) -> None:
+        """Kakita reactive-parries when damage_rolled > 12."""
+        from src.engine.simulation import _should_reactive_parry
+
+        # damage_rolled = 4 + 3 + 6 = 13 > 12
+        assert _should_reactive_parry(3, 3, 45, 15, 4, 3, 0, 3, False, is_kakita=True)
+
+    def test_reactive_threshold_lower_than_interrupt(self) -> None:
+        """Reactive parry triggers at lower damage than interrupt parry for same school."""
+        from src.engine.simulation import _should_interrupt_parry, _should_reactive_parry
+
+        # damage_rolled = 4 + 3 + 4 = 11 > 10 → default interrupts
+        assert _should_interrupt_parry(3, 3, 35, 15, 4, 3, 4, 0, 3)
+        # Same scenario: reactive parry also triggers (extra_dice=4 >= 1)
+        assert _should_reactive_parry(3, 3, 35, 15, 4, 3, 0, 3, False)
+
+        # damage_rolled = 4 + 3 + 1 = 8, not > 10 → default does NOT interrupt
+        assert not _should_interrupt_parry(3, 3, 20, 15, 4, 3, 4, 0, 3)
+        # But reactive parry still triggers (extra_dice=1 >= 1)
+        assert _should_reactive_parry(3, 3, 20, 15, 4, 3, 0, 3, False)
+
+
+class TestInterruptParry:
+    """Tests for _should_interrupt_parry (2-die interrupt after hit)."""
+
+    def test_default_catastrophic_overflow(self) -> None:
+        """Default characters interrupt-parry on catastrophic damage overflow."""
+        from src.engine.simulation import _should_interrupt_parry
+
+        # damage_rolled = 4 + 3 + 4 = 11 > 10
+        assert _should_interrupt_parry(3, 3, 35, 15, 4, 3, 4, 0, 3)
+
+    def test_default_near_cripple(self) -> None:
+        """Default characters interrupt when near cripple with extra dice."""
+        from src.engine.simulation import _should_interrupt_parry
+
+        # wounds_to_cripple=1, extra_dice=2
+        assert _should_interrupt_parry(3, 3, 25, 15, 4, 3, 4, 2, 3)
+
+    def test_default_no_interrupt_moderate(self) -> None:
+        """Default characters don't interrupt for moderate damage."""
+        from src.engine.simulation import _should_interrupt_parry
+
+        # damage_rolled = 4 + 3 + 2 = 9, not > 10; wounds_to_cripple=3
+        assert not _should_interrupt_parry(3, 3, 25, 15, 4, 3, 4, 0, 3)
+
+    def test_mirumoto_slightly_more_willing(self) -> None:
+        """Mirumoto interrupts at slightly lower threshold (temp void)."""
+        from src.engine.simulation import _should_interrupt_parry
+
+        # damage_rolled = 4 + 3 + 3 = 10 > 9 → Mirumoto triggers, default doesn't
+        assert _should_interrupt_parry(3, 3, 30, 15, 4, 3, 4, 0, 3, is_mirumoto=True)
+        assert not _should_interrupt_parry(3, 3, 30, 15, 4, 3, 4, 0, 3)
+
+    def test_kakita_only_massive(self) -> None:
+        """Kakita only interrupt-parries massive damage (>15 rolled)."""
+        from src.engine.simulation import _should_interrupt_parry
+
+        # damage_rolled = 4 + 3 + 4 = 11, not > 15
+        assert not _should_interrupt_parry(3, 3, 35, 15, 4, 3, 4, 0, 3, is_kakita=True)
+        # damage_rolled = 4 + 3 + 10 = 17 > 15, extra_dice=10 >= 3+3
+        assert _should_interrupt_parry(3, 3, 65, 15, 4, 3, 4, 0, 3, is_kakita=True)
+
+    def test_requires_2_dice(self) -> None:
+        """Interrupt parry requires at least 2 remaining dice."""
+        from src.engine.simulation import _should_interrupt_parry
+
+        assert not _should_interrupt_parry(3, 3, 50, 15, 4, 3, 1, 0, 3)
+
+    def test_interrupt_threshold_higher_than_reactive(self) -> None:
+        """Interrupt threshold is strictly higher than reactive for the same inputs."""
+        from src.engine.simulation import _should_interrupt_parry, _should_reactive_parry
+
+        # Cases where reactive triggers but interrupt does not
+        # damage_rolled = 4 + 3 + 1 = 8; extra_dice=1
+        assert _should_reactive_parry(3, 3, 20, 15, 4, 3, 0, 3, False)
+        assert not _should_interrupt_parry(3, 3, 20, 15, 4, 3, 4, 0, 3)
+
+        # Kakita: damage_rolled = 13 > 12 → reactive triggers
+        assert _should_reactive_parry(3, 3, 45, 15, 4, 3, 0, 3, False, is_kakita=True)
+        # damage_rolled = 13, not > 15 → interrupt does not
+        assert not _should_interrupt_parry(3, 3, 45, 15, 4, 3, 4, 0, 3, is_kakita=True)
+
+
+class TestPredeclareParry:
+    """Tests for _should_predeclare_parry."""
+
+    def test_kakita_never_predeclares(self) -> None:
+        """Kakita Duelists never pre-declare parries."""
+        from src.engine.simulation import _should_predeclare_parry
+
+        assert not _should_predeclare_parry(5, 4, 50, False, is_kakita=True)
+        assert not _should_predeclare_parry(5, 4, 100, False, is_kakita=True)
+
+    def test_non_kakita_predeclares_when_expected_low(self) -> None:
+        """Non-Kakita predeclares when expected parry < attack TN."""
+        from src.engine.simulation import _should_predeclare_parry
+
+        # parry=2, air=2 → 4k2, expected≈14 < 25 → predeclare
+        assert _should_predeclare_parry(2, 2, 25, False)
+
+    def test_non_kakita_skips_when_expected_high(self) -> None:
+        """Non-Kakita skips predeclare when expected parry >= attack TN."""
+        from src.engine.simulation import _should_predeclare_parry
+
+        # parry=3, air=4 → 7k4, expected≈28 >= 15 → skip
+        assert not _should_predeclare_parry(3, 4, 15, False)

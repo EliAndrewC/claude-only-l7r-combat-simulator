@@ -3,7 +3,7 @@
 Core mechanic: Roll X 10-sided dice, keep Y highest.
 - 10s explode (reroll and add) unless at skill rank 0 or crippled.
 - When rolled dice exceed 10, each excess converts to one extra kept die.
-- When kept dice exceed 10, each excess adds a flat +1 bonus.
+- When kept dice exceed 10, each excess adds a flat +2 bonus.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def roll_and_keep(
 
     Overflow rules (per 02-skills.md):
     - When rolled dice exceed 10, each excess becomes one extra kept die.
-    - When kept dice exceed 10, each excess adds a flat +1 bonus.
+    - When kept dice exceed 10, each excess adds a flat +2 bonus.
 
     Args:
         rolled: Number of dice to roll.
@@ -58,9 +58,9 @@ def roll_and_keep(
         effective_kept += effective_rolled - 10
         effective_rolled = 10
 
-    # Step 2: excess kept dice beyond 10 convert to flat +1 bonus each
+    # Step 2: excess kept dice beyond 10 convert to flat +2 bonus each
     if effective_kept > 10:
-        bonus += effective_kept - 10
+        bonus += (effective_kept - 10) * 2
         effective_kept = 10
 
     effective_kept = min(effective_kept, effective_rolled)

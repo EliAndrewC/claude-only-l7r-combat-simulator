@@ -12,7 +12,7 @@ from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
 from src.models.weapon import Weapon
 
 # Annotations worth surfacing from action descriptions.
-_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man", "mirumoto", "matsu", "3rd dan", "crippled")
+_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man", "mirumoto", "matsu", "kakita", " dan", "crippled")
 
 
 def _md_to_html(text: str) -> str:
@@ -68,7 +68,7 @@ def _group_action_sequences(
     current: list[CombatAction] = []
 
     for action in actions:
-        if action.action_type in (ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE):
+        if action.action_type in (ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE, ActionType.IAIJUTSU):
             if current:
                 sequences.append(current)
             current = [action]
@@ -122,7 +122,7 @@ def render_winner_banner(log: CombatLog) -> None:
 
 def compute_combat_stats(log: CombatLog) -> dict:
     """Compute summary statistics from a combat log."""
-    _ATTACK_TYPES = {ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE}
+    _ATTACK_TYPES = {ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE, ActionType.IAIJUTSU}
     attacks = [a for a in log.actions if a.action_type in _ATTACK_TYPES]
     hits = [a for a in attacks if a.success]
     parries = [a for a in log.actions if a.action_type == ActionType.PARRY]
@@ -154,7 +154,7 @@ def compute_combat_stats(log: CombatLog) -> dict:
     wound_checks = [a for a in log.actions if a.action_type == ActionType.WOUND_CHECK]
     wc_failed_by_10 = sum(
         1 for wc in wound_checks
-        if not wc.success and wc.tn is not None and (wc.tn - wc.total) >= 10
+        if not wc.success and wc.tn is not None and ((wc.base_tn if wc.base_tn is not None else wc.tn) - wc.total) >= 10
     )
 
     return {
@@ -181,7 +181,7 @@ def render_combat_stats(stats: dict) -> None:
     cols[1].metric("Most SW From One Hit", stats["most_sw_one_hit"])
     cols[2].metric("Parry Attempts", stats["parry_attempts"])
     cols[2].metric("Successful Parries", stats["successful_parries"])
-    cols[2].metric("WC Failed by ≥10", stats["wc_failed_by_10"])
+    cols[2].metric("Wound Checks Failed by ≥10", stats["wc_failed_by_10"])
 
 
 def render_round_log(log: CombatLog) -> None:
@@ -233,6 +233,7 @@ _ACTION_ICONS = {
     ActionType.DAMAGE: "💥",
     ActionType.WOUND_CHECK: "❤️",
     ActionType.LUNGE: "🗡️💨",
+    ActionType.IAIJUTSU: "⚡",
 }
 
 
@@ -248,7 +249,9 @@ def _wound_check_icon(action: CombatAction) -> str:
         # Deliberate conversion: always 1 serious wound
         return "💔"
     # Failed: 1 + overflow serious wounds from the roll
-    serious = 1 + max(0, (action.tn - action.total) // 10)
+    # Use base_tn (ignoring ability-10 raise) for serious wound calculation
+    tn_for_sw = action.base_tn if action.base_tn is not None else action.tn
+    serious = 1 + max(0, (tn_for_sw - action.total) // 10)
     return "💔" * serious
 
 
@@ -285,7 +288,18 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
     else:
         icon = _ACTION_ICONS.get(action.action_type, "▪️")
 
-    phase_str = f"Phase {action.phase}" if action.phase > 0 else "Initiative"
+    # Prepend interrupt indicator for out-of-turn actions
+    if action.action_type == ActionType.INTERRUPT:
+        icon = f"❗{icon}"
+    elif action.action_type == ActionType.IAIJUTSU and "(interrupt)" in action.description:
+        icon = f"❗{icon}"
+
+    if action.action_type == ActionType.INITIATIVE:
+        phase_str = "Initiative"
+    elif action.phase == 0:
+        phase_str = "Phase 0"
+    else:
+        phase_str = f"Phase {action.phase}"
 
     if action.success is not None:
         result = "**HIT**" if action.success else "miss"
@@ -295,7 +309,8 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
             if action.success:
                 result = "passed"
             else:
-                serious = 1 + ((action.tn - action.total) // 10)
+                tn_for_sw = action.base_tn if action.base_tn is not None else action.tn
+                serious = 1 + ((tn_for_sw - action.total) // 10)
                 if serious > 1:
                     result = f"**FAILED, takes {serious} serious wounds**"
                 else:
@@ -312,6 +327,10 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
             if d in kept_remaining:
                 rolled_display.append(f"**{d}**")
                 kept_remaining.remove(d)
+            elif d == 10 and 0 in kept_remaining:
+                # Kakita SA: rolled 10 is kept as phase 0
+                rolled_display.append(f"**{d}**")
+                kept_remaining.remove(0)
             else:
                 rolled_display.append(f"~~{d}~~")
         dice_str = f" [{', '.join(rolled_display)}]"
@@ -324,13 +343,19 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
         )
     else:
         pool_prefix = f"{action.dice_pool} " if action.dice_pool else ""
-        tn_str = f" vs TN {action.tn}" if action.tn is not None else ""
+        if action.tn_description:
+            tn_str = f" {action.tn_description}"
+        elif action.tn is not None:
+            tn_str = f" vs TN {action.tn}"
+        else:
+            tn_str = ""
         total_str = f" = {action.total}" if action.total else ""
         notes = extract_annotations(action.description)
         notes_str = f" {notes}" if notes else ""
+        action_label = action.label or action.action_type.value
         text = (
             f"{icon} **{phase_str}** | {action.actor} | "
-            f"{pool_prefix}{action.action_type.value}{tn_str}{total_str} {result}{dice_str}{notes_str}"
+            f"{pool_prefix}{action_label}{tn_str}{total_str} {result}{dice_str}{notes_str}"
         )
 
     if is_fighter_1:

@@ -99,7 +99,7 @@ The higher total wins.
 
 No roll uses more than 10 dice. When the number of rolled dice would exceed 10, 
 one extra die is instead kept for every rolled dice above 10. For every rolled 
-or kept die beyond 10k10, add 1 to to the result of the roll. Also, certain 
+or kept die beyond 10k10, add 2 to to the result of the roll. Also, certain 
 conditions create free raises, which add 5 to a roll's total; these are either 
 granted by the GM as situational bonuses or automatically created by advantages 
 and schools.

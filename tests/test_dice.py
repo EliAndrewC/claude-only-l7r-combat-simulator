@@ -47,20 +47,20 @@ class TestRollAndKeep:
             assert len(kept_dice) == 5
 
     def test_overflow_kept_adds_bonus(self) -> None:
-        """Keeping more than 10 dice adds +1 per excess to total."""
+        """Keeping more than 10 dice adds +2 per excess to total."""
         with patch("src.engine.dice.roll_die", side_effect=[5] * 10):
             _, _, total = roll_and_keep(10, 12, explode=True)
-            # kept capped to 10, bonus +2, all dice kept = 50 + 2 = 52
-            assert total == 52
+            # kept capped to 10, bonus = 2 * 2 = +4, all dice kept = 50 + 4 = 54
+            assert total == 54
 
     def test_overflow_rolled_converts_to_kept_and_beyond_10k10(self) -> None:
         """Excess rolled converts to kept; if kept > 10, further excess becomes bonus."""
         with patch("src.engine.dice.roll_die", side_effect=[5] * 10):
             all_dice, kept_dice, total = roll_and_keep(22, 3, explode=True)
             # 22 rolled → effective_kept = 3 + 12 = 15, effective_rolled = 10
-            # kept 15 > 10 → bonus = 5, effective_kept = 10
-            # 10 dice all 5 → keep 10 = 50, + 5 bonus = 55
-            assert total == 55
+            # kept 15 > 10 → bonus = 5 * 2 = 10, effective_kept = 10
+            # 10 dice all 5 → keep 10 = 50, + 10 bonus = 60
+            assert total == 60
             assert len(all_dice) == 10
             assert len(kept_dice) == 10
 

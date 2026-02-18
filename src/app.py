@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from src.engine.kakita import compute_kakita_stats_from_xp
 from src.engine.matsu import compute_matsu_stats_from_xp
 from src.engine.mirumoto import compute_mirumoto_stats_from_xp
 from src.engine.waveman import (
@@ -66,6 +67,11 @@ def _maybe_repopulate_stats(prefix: str, build_choice: str,
             earned_xp=earned_xp,
             non_combat_pct=non_combat / 100.0,
         )
+    elif build_choice == "Kakita Duelist":
+        stats = compute_kakita_stats_from_xp(
+            earned_xp=earned_xp,
+            non_combat_pct=non_combat / 100.0,
+        )
     elif build_choice == "Wave Man":
         stats = compute_waveman_stats_from_xp(
             earned_xp=earned_xp,
@@ -84,7 +90,7 @@ def _maybe_repopulate_stats(prefix: str, build_choice: str,
     st.session_state[f"{prefix}_parry"] = stats.parry
 
     # School knack ranks
-    if build_choice in ("Mirumoto Bushi", "Matsu Bushi"):
+    if build_choice in ("Mirumoto Bushi", "Matsu Bushi", "Kakita Duelist"):
         for knack_key, rank in stats.knack_ranks.items():
             st.session_state[f"{prefix}_knack_{knack_key}"] = rank
 
@@ -98,7 +104,7 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     """Build character configuration in the sidebar, returning character, weapon type, and build choice."""
     st.sidebar.header(f"{label}")
 
-    build_options = ["Base", "Wave Man", "Mirumoto Bushi", "Matsu Bushi"]
+    build_options = ["Base", "Wave Man", "Mirumoto Bushi", "Matsu Bushi", "Kakita Duelist"]
     build_choice = st.sidebar.selectbox(
         f"{label} Build", build_options, index=0, key=f"{key_prefix}_preset"
     )
@@ -205,6 +211,34 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         if techniques:
             st.sidebar.text("Techniques: " + ", ".join(techniques))
 
+    elif build_choice == "Kakita Duelist":
+        knack_display = {"double_attack": "Double Attack", "iaijutsu": "Iaijutsu", "lunge": "Lunge"}
+        st.sidebar.markdown("**School Knacks**")
+        for knack_key, knack_name in knack_display.items():
+            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            knack_ranks[knack_key] = st.sidebar.slider(
+                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+            )
+        # Dan level display (read-only)
+        dan_level = min(knack_ranks.values()) if knack_ranks else 0
+        st.sidebar.text(f"Dan: {dan_level}")
+        # Active techniques display
+        techniques = []
+        if dan_level >= 1:
+            techniques.append("1st: +1 die DA/iaijutsu/init")
+        if dan_level >= 2:
+            techniques.append("2nd: free raise iaijutsu")
+        if dan_level >= 3:
+            techniques.append("3rd: phase gap attack bonus")
+        if dan_level >= 4:
+            techniques.append("4th: Fire +1 / iaijutsu dmg raise")
+        if dan_level >= 5:
+            techniques.append("5th: contested iaijutsu opener")
+        if dan_level >= 1:
+            techniques.append("SA: 10s → Phase 0")
+        if techniques:
+            st.sidebar.text("Techniques: " + ", ".join(techniques))
+
     # --- Abilities display (Wave Man only, read-only) ---
     if build_choice == "Wave Man":
         abilities = compute_abilities(earned_xp)
@@ -254,6 +288,15 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
                 skill_type=SkillType.ADVANCED,
                 ring=RingName.FIRE,
             ))
+    elif build_choice == "Kakita Duelist":
+        knack_display_names = {"double_attack": "Double Attack", "iaijutsu": "Iaijutsu", "lunge": "Lunge"}
+        for knack_key, knack_name in knack_display_names.items():
+            skills.append(Skill(
+                name=knack_name,
+                rank=knack_ranks.get(knack_key, 1),
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ))
 
     profession_abilities = compute_abilities(earned_xp) if build_choice == "Wave Man" else []
 
@@ -270,6 +313,10 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         school_name = "Matsu Bushi"
         school_ring_val = RingName.FIRE
         school_knacks_val = ["Double Attack", "Iaijutsu", "Lunge"]
+    elif build_choice == "Kakita Duelist":
+        school_name = "Kakita Duelist"
+        school_ring_val = RingName.FIRE
+        school_knacks_val = ["Double Attack", "Iaijutsu", "Lunge"]
 
     char = Character(
         name=label,
@@ -283,7 +330,7 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     return char, weapon_type_choice, build_choice
 
 
-_VALID_BUILD_MODES = {"Base", "Wave Man", "Mirumoto Bushi", "Matsu Bushi"}
+_VALID_BUILD_MODES = {"Base", "Wave Man", "Mirumoto Bushi", "Matsu Bushi", "Kakita Duelist"}
 
 # --- Restore slider values from URL on page refresh ---
 for _pf in ("f1", "f2"):

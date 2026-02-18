@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from streamlit.testing.v1 import AppTest
 
+from src.engine.kakita import compute_kakita_stats_from_xp
 from src.engine.matsu import compute_matsu_stats_from_xp
 from src.engine.mirumoto import compute_mirumoto_stats_from_xp
 from src.engine.xp_builder import compute_stats_from_xp
@@ -824,3 +825,105 @@ class TestMatsuUI:
         desc = "Matsu lunges: 6k3 vs TN 15 (matsu 3rd Dan: +12 wound check bonus stored)"
         result = extract_annotations(desc)
         assert "(matsu 3rd Dan: +12 wound check bonus stored)" in result
+
+
+class TestKakitaUI:
+    """Tests for Kakita Duelist build mode UI."""
+
+    def test_kakita_option_loads(self) -> None:
+        """Selecting 'Kakita Duelist' doesn't crash."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Kakita Duelist").run()
+        assert not at.exception
+
+    def test_kakita_fight_works(self) -> None:
+        """Two Kakita Duelists can fight without errors."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Kakita Duelist").run()
+        at.selectbox(key="f2_preset").set_value("Kakita Duelist").run()
+        at.button[0].click().run()
+        assert not at.exception
+        has_result = len(at.success) > 0 or len(at.warning) > 0
+        assert has_result
+
+    def test_kakita_shows_knack_sliders(self) -> None:
+        """Kakita mode has knack slider widgets."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Kakita Duelist").run()
+        assert not at.exception
+        assert at.slider(key="f1_knack_double_attack") is not None
+        assert at.slider(key="f1_knack_iaijutsu") is not None
+        assert at.slider(key="f1_knack_lunge") is not None
+
+    def test_kakita_build_mode_persists(self) -> None:
+        """Build mode query param round-trip for Kakita."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.query_params["f1_build"] = "Kakita Duelist"
+        at.run()
+        assert not at.exception
+        assert at.session_state["f1_preset"] == "Kakita Duelist"
+
+    def test_kakita_rings_from_xp(self) -> None:
+        """Kakita ring values match compute_kakita_stats_from_xp."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Kakita Duelist").run()
+        stats = compute_kakita_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        assert at.session_state["f1_fire"] == stats.ring_values["fire"]
+        assert at.session_state["f1_air"] == stats.ring_values["air"]
+
+    def test_switching_to_kakita_repopulates(self) -> None:
+        """Switching from Base to Kakita recomputes ring values."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Kakita Duelist").run()
+        stats = compute_kakita_stats_from_xp(earned_xp=0, non_combat_pct=0.20)
+        for rn in ("air", "fire", "earth", "water", "void"):
+            assert at.session_state[f"f1_{rn}"] == stats.ring_values[rn]
+
+    def test_kakita_defaults_to_katana(self) -> None:
+        """Selecting Kakita Duelist sets weapon to Katana."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Kakita Duelist").run()
+        assert at.session_state["f1_weapon"] == WeaponType.KATANA
+
+    def test_kakita_annotation_extracted(self) -> None:
+        """extract_annotations picks up kakita bonus text."""
+        desc = "Kakita lunges: 6k3 vs TN 15 (kakita 3rd Dan: +20, 5 phases)"
+        result = extract_annotations(desc)
+        assert "(kakita 3rd Dan: +20, 5 phases)" in result
+
+    def test_kakita_4th_dan_annotation_extracted(self) -> None:
+        """extract_annotations picks up 4th Dan bonus text."""
+        desc = "Kakita 5th Dan iaijutsu damage: 10k5 = 86 (4th Dan free raise: +5)"
+        result = extract_annotations(desc)
+        assert "(4th Dan free raise: +5)" in result
+
+    def test_kakita_5th_dan_damage_notes_extracted(self) -> None:
+        """extract_annotations picks up won/lost margin notes with Dan."""
+        desc = "Kakita 5th Dan iaijutsu damage: 14k2 = 23 (won by 16: +3 rolled, 4th Dan free raise: +5)"
+        result = extract_annotations(desc)
+        assert "4th Dan free raise: +5" in result
+
+
+class TestIaijutsuActionSequence:
+    """Tests for Iaijutsu action type in grouping."""
+
+    def test_iaijutsu_starts_new_sequence(self) -> None:
+        """IAIJUTSU starts a new action sequence like ATTACK does."""
+        actions = [
+            _action(ActionType.INITIATIVE, actor="A"),
+            _action(ActionType.INITIATIVE, actor="B"),
+            _action(ActionType.IAIJUTSU, phase=0, actor="A"),
+            _action(ActionType.DAMAGE, phase=0, actor="A"),
+            _action(ActionType.WOUND_CHECK, phase=0, actor="B"),
+        ]
+        seqs = _group_action_sequences(actions)
+        assert len(seqs) == 2
+        assert seqs[0][0].action_type == ActionType.INITIATIVE
+        assert seqs[1][0].action_type == ActionType.IAIJUTSU
+        assert len(seqs[1]) == 3

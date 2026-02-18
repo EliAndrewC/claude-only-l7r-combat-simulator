@@ -142,20 +142,21 @@ def _should_convert_light_to_serious(
     long-term danger of carrying high light wounds into future wound checks.
 
     Keeping N light wounds saves 1 serious wound now, but raises every future
-    wound check TN by N.  The break-even depends on how well the character
-    can absorb that higher TN, i.e. their wound check power.
+    wound check TN by N.  If the next wound check fails, the character takes
+    1 serious wound plus 1 additional serious wound per full 10 the roll
+    falls short.  High carried light wounds make catastrophic multi-SW
+    failures much more likely.
 
-    Wound check = (Water+1)k(Water) with exploding 10s.  We estimate the
-    average roll and set the keep-threshold as a fraction of it:
+    The key risk: carried light wounds add directly to the wound check TN
+    on the next hit.  If you would have failed the wound check anyway, the
+    extra `light_wounds` TN means `light_wounds // 10` additional serious
+    wounds on top.  We convert when that risk exceeds 1 (the cost of
+    converting now).
 
-        avg_wc ≈ Water × 6.5 + 2      (rough mean of (Water+1)kWater)
-        threshold = max(10, round(avg_wc × 0.8))
-
-    Below 10 light wounds there is zero downside to keeping: even the worst-
-    case future failure adds at most 1 extra serious wound (deficit < 10),
-    exactly cancelling the 1 serious saved by not converting.  Above the
-    threshold the accumulated TN becomes dangerous enough that converting
-    is the safer play.
+    The threshold is set so that the carried light wounds alone could cause
+    2+ extra serious wounds if the wound check roll is poor.  We use the
+    average wound check roll as a baseline for "what you can absorb" and
+    convert when the light wounds push the TN far enough past that baseline.
 
     Threshold examples (placeholder — intended to be tuned by simulation):
         Water 1 → 10   (bad wound check, converts anything above 10)
@@ -173,20 +174,33 @@ def _should_convert_light_to_serious(
     Returns:
         True if the character should take 1 serious wound and reset light wounds to 0.
     """
-    # Never convert if it would cripple (serious + 1 >= earth)
-    if serious_wounds + 1 >= earth_ring:
+    # Never convert if it would mortally wound (serious + 1 >= 2 * earth)
+    if serious_wounds + 1 >= 2 * earth_ring:
+        return False
+
+    # Below 10 light wounds, keeping is always safe: even a worst-case
+    # failure adds at most 1 extra serious wound (deficit < 10), exactly
+    # cancelling the 1 serious saved by not converting.
+    if light_wounds <= 10:
         return False
 
     # Estimate expected wound check total for (Water+1)k(Water) w/ explosions.
     # Each kept die averages ~6.5 (selection bias from keeping highest of a
     # slightly larger pool pushes it above the raw 6.11 mean of an exploding
     # d10).  The dropped minimum die is small (~2–4), so we add a flat +2.
-    avg_wc_total = water_ring * 6.5 + 2
+    avg_wc = water_ring * 6.5 + 2
 
     # Keep threshold: 80% of expected wound check total, floored at 10.
     # The 0.8 factor provides margin for variance and for the fact that
     # future hits will stack additional damage on top of the carried wounds.
-    threshold = max(10, round(avg_wc_total * 0.8))
+    threshold = max(10, round(avg_wc * 0.8))
+
+    # If converting would cripple (but not mortally wound), raise the bar:
+    # only convert if light wounds are very dangerous (> 1.5× threshold),
+    # since becoming crippled is a steep cost (lose 10-rerolling on skills).
+    would_cripple = serious_wounds + 1 >= earth_ring
+    if would_cripple:
+        threshold = round(threshold * 1.5)
 
     return light_wounds > threshold
 
@@ -724,9 +738,12 @@ def _apply_ability5_reroll(
         Tuple of (all_dice, kept_dice, total, description_suffix).
     """
     rank = character.ability_rank(5)
-    if rank > 0 and any(d == 10 for d in all_dice):
+    tens_count = sum(1 for d in all_dice if d == 10)
+    if rank > 0 and tens_count > 0:
+        rerolled = min(tens_count, rank)
         all_dice, kept_dice, total = reroll_tens(all_dice, kept_count, max_reroll=rank)
-        description_suffix += f" (wave man: free rerolled {rank} ten(s))"
+        tens_word = "ten" if rerolled == 1 else "tens"
+        description_suffix += f" (crippled reroll: rerolled {rerolled} {tens_word})"
         return all_dice, kept_dice, total, description_suffix
     kept_dice = sorted(all_dice, reverse=True)[:kept_count]
     total = sum(kept_dice)
@@ -1106,7 +1123,7 @@ def _resolve_attack(
             attack_action.target = defender_name
 
     # Ability 5: Free crippled reroll on attack (before void reroll)
-    if attacker_crippled and not attack_action.success:
+    if attacker_crippled:
         new_all, new_kept, new_total, note = _apply_ability5_reroll(
             attacker, attack_action.dice_rolled, len(attack_action.dice_kept),
         )
@@ -1146,7 +1163,7 @@ def _resolve_attack(
             attack_action.total = boosted_total
             attack_action.success = True
             parry_auto_succeeds = True
-            attack_action.description += f" (wave man: +{5 * ab1_rank} free raise)"
+            attack_action.description += f" (wave man: +{5 * ab1_rank} on miss)"
 
     # 3rd Dan Mirumoto: post-roll +2 per point on attack
     if atk_is_mirumoto and atk_dan >= 3 and not attack_action.success:

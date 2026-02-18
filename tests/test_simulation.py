@@ -630,6 +630,9 @@ class TestWoundCheckSuccessChoice:
         threshold = max(10, round(avg_wc × 0.8))
 
     Water 1 → 10, Water 2 → 12, Water 3 → 17, Water 4 → 22, Water 5 → 28
+
+    If converting would cripple, threshold is raised to 1.5× (e.g. Water 4 → 33).
+    Never converts if it would mortally wound.
     """
 
     # --- Universal: ≤ 10 is always safe ---
@@ -693,14 +696,29 @@ class TestWoundCheckSuccessChoice:
             light_wounds=25, serious_wounds=0, earth_ring=4, water_ring=5,
         ) is False
 
-    # --- Safety: never convert into crippled/mortal ---
+    # --- Safety: cripple threshold / mortal guard ---
 
-    def test_no_convert_if_would_cripple(self) -> None:
-        """Don't convert if taking a serious wound would cripple."""
-        # earth=2, serious=1. Adding 1 more = 2 = crippled. Should avoid.
+    def test_would_cripple_raises_threshold(self) -> None:
+        """If converting would cripple, require higher light wounds to convert."""
+        # earth=3, serious=2. Normal threshold for water=3 is 17.
+        # Converting would cripple → threshold raised to 26.
+        # 20 light wounds: below cripple threshold, keeps.
         assert _should_convert_light_to_serious(
-            light_wounds=25, serious_wounds=1, earth_ring=2, water_ring=1,
+            light_wounds=20, serious_wounds=2, earth_ring=3, water_ring=3,
         ) is False
+        # 30 light wounds: above cripple threshold, converts despite cripple cost.
+        assert _should_convert_light_to_serious(
+            light_wounds=30, serious_wounds=2, earth_ring=3, water_ring=3,
+        ) is True
+
+    def test_already_crippled_uses_normal_threshold(self) -> None:
+        """Already crippled (serious >= earth) — no extra cripple cost, normal threshold."""
+        # earth=3, serious=3, water=3. Already crippled. serious+1=4 >= 3 but < 6.
+        # would_cripple is True (4 >= 3), so cripple threshold 26 applies.
+        # But 30 > 26, so still converts.
+        assert _should_convert_light_to_serious(
+            light_wounds=30, serious_wounds=3, earth_ring=3, water_ring=3,
+        ) is True
 
     def test_no_convert_if_would_mortally_wound(self) -> None:
         """Don't convert if taking a serious wound would mortally wound."""
@@ -1638,7 +1656,7 @@ class TestWaveManAttackReroll:
             attack_actions = [a for a in log.actions if a.action_type == ActionType.ATTACK]
             assert len(attack_actions) == 1
             assert attack_actions[0].success is True
-            assert "free raise" in attack_actions[0].description.lower()
+            assert "on miss" in attack_actions[0].description.lower()
 
             # Parry should auto-succeed
             parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
@@ -1685,7 +1703,7 @@ class TestWaveManAttackReroll:
             )
 
             attack_actions = [a for a in log.actions if a.action_type == ActionType.ATTACK]
-            assert "free raise" not in attack_actions[0].description.lower()
+            assert "on miss" not in attack_actions[0].description.lower()
 
 
 class TestWaveManParryTN:

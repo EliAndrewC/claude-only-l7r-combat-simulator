@@ -12,7 +12,7 @@ from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
 from src.models.weapon import Weapon
 
 # Annotations worth surfacing from action descriptions.
-_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man", "mirumoto", "matsu", "3rd dan")
+_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man", "mirumoto", "matsu", "3rd dan", "crippled")
 
 
 def _md_to_html(text: str) -> str:
@@ -383,7 +383,7 @@ def _render_status_between(status_after: dict[str, FighterStatus]) -> None:
     ]
     _pad_l, center, _pad_r = st.columns([1, 4, 1])
     center.caption(
-        f"<div style='text-align: center'>{'<br>'.join(lines)}</div>",
+        f"<div style='text-align: center; padding: 1rem 0'>{'<br>'.join(lines)}</div>",
         unsafe_allow_html=True,
     )
 

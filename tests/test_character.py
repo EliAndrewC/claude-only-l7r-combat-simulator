@@ -83,9 +83,21 @@ class TestDanProperty:
             name="Test",
             school_knacks=["Counterattack", "Double Attack", "Iaijutsu"],
             skills=[
-                Skill(name="Counterattack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
-                Skill(name="Double Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
-                Skill(name="Iaijutsu", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(
+                    name="Counterattack", rank=3,
+                    skill_type=SkillType.ADVANCED,
+                    ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Double Attack", rank=3,
+                    skill_type=SkillType.ADVANCED,
+                    ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Iaijutsu", rank=3,
+                    skill_type=SkillType.ADVANCED,
+                    ring=RingName.FIRE,
+                ),
             ],
         )
         assert char.dan == 3
@@ -96,9 +108,21 @@ class TestDanProperty:
             name="Test",
             school_knacks=["Counterattack", "Double Attack", "Iaijutsu"],
             skills=[
-                Skill(name="Counterattack", rank=4, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
-                Skill(name="Double Attack", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
-                Skill(name="Iaijutsu", rank=5, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(
+                    name="Counterattack", rank=4,
+                    skill_type=SkillType.ADVANCED,
+                    ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Double Attack", rank=2,
+                    skill_type=SkillType.ADVANCED,
+                    ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Iaijutsu", rank=5,
+                    skill_type=SkillType.ADVANCED,
+                    ring=RingName.FIRE,
+                ),
             ],
         )
         assert char.dan == 2

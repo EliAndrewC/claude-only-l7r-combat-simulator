@@ -13,6 +13,8 @@ from src.engine.simulation import (
     _kakita_should_phase0_attack,
     _matsu_attack_choice,
     _resolve_attack,
+    _select_shinjo_wc_bonuses,
+    _shinjo_attack_choice,
     _should_convert_light_to_serious,
     _should_interrupt_parry,
     _should_predeclare_parry,
@@ -21,11 +23,19 @@ from src.engine.simulation import (
     _spend_void,
     _tiebreak_key,
     _total_void,
-    _void_spent_label,
     _try_phase_shift_parry,
+    _void_spent_label,
     simulate_combat,
 )
-from src.models.character import Character, ProfessionAbility, Ring, RingName, Rings, Skill, SkillType
+from src.models.character import (
+    Character,
+    ProfessionAbility,
+    Ring,
+    RingName,
+    Rings,
+    Skill,
+    SkillType,
+)
 from src.models.combat import ActionType, FighterStatus
 from src.models.weapon import Weapon, WeaponType
 
@@ -449,7 +459,10 @@ class TestVoidSpendingOnWoundCheck:
         for _ in range(20):
             log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
             for action in log.actions:
-                if action.action_type == ActionType.WOUND_CHECK and "void" in action.description.lower():
+                if (
+                    action.action_type == ActionType.WOUND_CHECK
+                    and "void" in action.description.lower()
+                ):
                     found_void_note = True
                     break
             if found_void_note:
@@ -466,7 +479,10 @@ class TestVoidSpendingOnWoundCheck:
         for _ in range(20):
             log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
             for action in log.actions:
-                if action.action_type == ActionType.WOUND_CHECK and "void" in action.description.lower():
+                if (
+                    action.action_type == ActionType.WOUND_CHECK
+                    and "void" in action.description.lower()
+                ):
                     found_decrement = True
                     break
             if found_decrement:
@@ -812,6 +828,37 @@ class TestWoundCheckSuccessChoice:
             light_wounds=13, serious_wounds=0, earth_ring=4, water_ring=3,
         ) is False
 
+    # --- Shinjo wound check bonus pool raises threshold ---
+
+    def test_shinjo_pool_keeps_wounds_that_would_convert(self) -> None:
+        """With a large Shinjo WC bonus pool, keep light wounds that
+        would otherwise be converted."""
+        # Water 2 → base threshold 12.  23 LW > 12 → converts normally.
+        assert _should_convert_light_to_serious(
+            light_wounds=23, serious_wounds=0, earth_ring=4,
+            water_ring=2, shinjo_wc_bonus_pool=0,
+        ) is True
+        # With +33 pool → threshold becomes 12 + 33 = 45.  23 < 45 → keeps.
+        assert _should_convert_light_to_serious(
+            light_wounds=23, serious_wounds=0, earth_ring=4,
+            water_ring=2, shinjo_wc_bonus_pool=33,
+        ) is False
+
+    def test_shinjo_pool_zero_no_effect(self) -> None:
+        """Zero pool doesn't change the conversion decision."""
+        assert _should_convert_light_to_serious(
+            light_wounds=15, serious_wounds=0, earth_ring=4,
+            water_ring=2, shinjo_wc_bonus_pool=0,
+        ) is True
+
+    def test_shinjo_pool_still_converts_extreme_wounds(self) -> None:
+        """Even with a pool, very high light wounds still convert."""
+        # Water 2 → base threshold 12 + pool 10 = 22.  30 > 22 → converts.
+        assert _should_convert_light_to_serious(
+            light_wounds=30, serious_wounds=0, earth_ring=4,
+            water_ring=2, shinjo_wc_bonus_pool=10,
+        ) is True
+
     # --- Integration: full simulation produces conversions ---
 
     def test_converts_in_full_simulation(self) -> None:
@@ -894,7 +941,8 @@ class TestPreDeclaredParry:
             assert "pre-declared" in parry.description.lower()
 
     def test_predeclare_wasted_on_miss(self) -> None:
-        """When pre-declared and attack misses, parry die is still consumed but no wasted action logged."""
+        """When pre-declared and attack misses, parry die
+        is still consumed but no wasted action logged."""
         a = _make_character("Attacker", fire=3, earth=3, void=2)
         b = _make_character("Defender", fire=2, earth=3, air=3, void=2)
 
@@ -1815,7 +1863,10 @@ class TestWaveManAttackReroll:
             assert attack_actions[0].success is True
 
             # No parry — damage_rolled (6) <= 6, not worth interrupt even with auto-success
-            parry_actions = [a for a in log.actions if a.action_type in (ActionType.PARRY, ActionType.INTERRUPT)]
+            parry_actions = [
+                a for a in log.actions
+                if a.action_type in (ActionType.PARRY, ActionType.INTERRUPT)
+            ]
             assert len(parry_actions) == 0
 
     def test_ability1_no_effect_when_attack_hits(self) -> None:
@@ -2257,7 +2308,7 @@ class TestWaveManCrippledReroll:
     def test_ability5_never_on_initiative(self) -> None:
         """Ability 5 should NOT affect initiative rolls."""
         a = _make_waveman("WM", abilities=[(5, 1)], void=3)
-        b = _make_character("B", void=3)
+        _make_character("B", void=3)
         # Even if WM is crippled, initiative should not get reroll
         # Since initiative is handled by roll_initiative (not _resolve_attack),
         # ability 5 is never called for initiative. This is by design.
@@ -2265,7 +2316,11 @@ class TestWaveManCrippledReroll:
         with patch("src.engine.combat.roll_die", side_effect=[10, 5, 3, 2]):
             action = roll_initiative(a)
             # The 10 should remain as 10 (no reroll)
-            assert 10 in action.dice_rolled or 10 in action.dice_kept or action.dice_rolled[-1] == 10
+            assert (
+                10 in action.dice_rolled
+                or 10 in action.dice_kept
+                or action.dice_rolled[-1] == 10
+            )
 
     def test_ability5_rerolls_in_attack(self) -> None:
         """Ability 5 rerolls 10s on attack when crippled."""
@@ -2367,11 +2422,31 @@ def _make_mirumoto(
         school_ring=RingName.VOID,
         school_knacks=["Counterattack", "Double Attack", "Iaijutsu"],
         skills=[
-            Skill(name="Attack", rank=attack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(
+                name="Attack",
+                rank=attack_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
             Skill(name="Parry", rank=parry_rank, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
-            Skill(name="Counterattack", rank=knack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
-            Skill(name="Double Attack", rank=da_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
-            Skill(name="Iaijutsu", rank=knack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(
+                name="Counterattack",
+                rank=knack_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Double Attack",
+                rank=da_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Iaijutsu",
+                rank=knack_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
         ],
     )
 
@@ -2581,7 +2656,10 @@ class TestMirumotoFourthDan:
             # 4th Dan: subtract half = 2//2 = 1 instead of 2.
             # So extra = 5 - 1 = 4 (instead of 5 - 2 = 3)
             dmg_call = mock_dmg.call_args
-            extra_dice_arg = dmg_call[1].get("extra_dice", dmg_call[0][3] if len(dmg_call[0]) > 3 else 0)
+            extra_dice_arg = dmg_call[1].get(
+                "extra_dice",
+                dmg_call[0][3] if len(dmg_call[0]) > 3 else 0,
+            )
             assert extra_dice_arg == 4
 
 
@@ -2852,7 +2930,14 @@ class TestTempVoidSeparation:
         void_points = {"A": 2, "B": 3}
         temp_void = {"A": 1, "B": 0}
         dan_points = {"A": 0, "B": 0}
-        snap = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void)
+        snap = _snapshot_status(
+            log,
+            fighters,
+            actions_remaining,
+            void_points,
+            dan_points,
+            temp_void,
+        )
         assert snap["A"].temp_void_points == 1
         assert snap["B"].temp_void_points == 0
         assert snap["A"].void_points == 2
@@ -3513,10 +3598,25 @@ def _make_matsu(
         school_ring=RingName.FIRE,
         school_knacks=["Double Attack", "Iaijutsu", "Lunge"],
         skills=[
-            Skill(name="Attack", rank=attack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(
+                name="Attack",
+                rank=attack_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
             Skill(name="Parry", rank=parry_rank, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
-            Skill(name="Double Attack", rank=da_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
-            Skill(name="Iaijutsu", rank=knack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(
+                name="Double Attack",
+                rank=da_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Iaijutsu",
+                rank=knack_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
             Skill(name="Lunge", rank=lng_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
         ],
     )
@@ -3531,7 +3631,10 @@ class TestMatsuSpecialAbility:
         b = _make_character("Target", fire=2, earth=3, void=2)
         log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
         # Find initiative action for the Matsu
-        init_actions = [a for a in log.actions if a.action_type == ActionType.INITIATIVE and a.actor == "Matsu"]
+        init_actions = [
+            a for a in log.actions
+            if a.action_type == ActionType.INITIATIVE and a.actor == "Matsu"
+        ]
         assert len(init_actions) >= 1
         # Void=2 means they'd normally roll 3 dice. With SA, should be 10.
         assert len(init_actions[0].dice_rolled) == 10
@@ -3542,7 +3645,15 @@ class TestMatsuFirstDan:
 
     def test_first_dan_extra_die_on_double_attack(self) -> None:
         """DA pool is DA_rank + fire + 1 for Matsu with dan >= 1."""
-        a = _make_matsu("Matsu", knack_rank=1, attack_rank=3, double_attack_rank=3, fire=3, earth=3, void=3)
+        a = _make_matsu(
+            "Matsu",
+            knack_rank=1,
+            attack_rank=3,
+            double_attack_rank=3,
+            fire=3,
+            earth=3,
+            void=3,
+        )
         b = _make_character("Target", fire=2, earth=3, void=2)
         b.skills = [Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
 
@@ -3571,15 +3682,17 @@ class TestMatsuFirstDan:
 
         log = create_combat_log(["Attacker", "Matsu"], [3, 3])
         log.wounds["Matsu"].light_wounds = 10
-        fighters = {"Attacker": {"char": a, "weapon": KATANA}, "Matsu": {"char": b, "weapon": KATANA}}
-
         # Manually drive a hit that leads to wound check
         # We'll use simulate_combat and check wound check dice
         log2 = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
-        wc_actions = [act for act in log2.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "Matsu"]
+        wc_actions = [
+            act for act in log2.actions
+            if act.action_type == ActionType.WOUND_CHECK and act.actor == "Matsu"
+        ]
         if wc_actions:
-            # Water=3, so base rolled = 4, Matsu 1st Dan adds 1 -> 5
-            assert len(wc_actions[0].dice_rolled) == 5
+            # Water=3, so base rolled = 4, Matsu 1st Dan adds 1 → 5 + void_spent
+            # Dice rolled must be at least 5 (no void) and always > base of 4
+            assert len(wc_actions[0].dice_rolled) >= 5
 
 
 class TestMatsuThirdDan:
@@ -3939,8 +4052,26 @@ class TestMatsuSmokeTest:
 
     def test_5th_dan_matsu_fight(self) -> None:
         """Two 5th Dan Matsu fight without errors."""
-        a = _make_matsu("M5_1", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
-        b = _make_matsu("M5_2", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        a = _make_matsu(
+            "M5_1",
+            knack_rank=5,
+            attack_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+            air=4,
+            water=4,
+        )
+        b = _make_matsu(
+            "M5_2",
+            knack_rank=5,
+            attack_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+            air=4,
+            water=4,
+        )
         for _ in range(5):
             log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
             assert log.combatants == ["M5_1", "M5_2"]
@@ -3971,10 +4102,25 @@ def _make_kakita(
         school_ring=RingName.FIRE,
         school_knacks=["Double Attack", "Iaijutsu", "Lunge"],
         skills=[
-            Skill(name="Attack", rank=attack_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(
+                name="Attack",
+                rank=attack_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
             Skill(name="Parry", rank=parry_rank, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
-            Skill(name="Double Attack", rank=da_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
-            Skill(name="Iaijutsu", rank=iai_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(
+                name="Double Attack",
+                rank=da_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Iaijutsu",
+                rank=iai_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
             Skill(name="Lunge", rank=lng_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
         ],
     )
@@ -3995,7 +4141,10 @@ class TestKakitaSA:
             mock_die.side_effect = [1, 4, 5, 6, 6, 10, 3, 5, 7]
             log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
 
-        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        init_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"
+        ]
         assert len(init_actions) == 1
         # 10 should be in dice_rolled
         assert 10 in init_actions[0].dice_rolled
@@ -4015,7 +4164,10 @@ class TestKakitaSA:
             mock_die.side_effect = [3, 5, 10, 10, 3, 5, 7]
             log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
 
-        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        init_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"
+        ]
         assert len(init_actions) == 1
         assert len(init_actions[0].dice_kept) == 2
         assert init_actions[0].dice_kept.count(0) == 2
@@ -4026,7 +4178,10 @@ class TestKakitaSA:
         a = _make_kakita("Kakita", knack_rank=1, fire=3, void=2)
         b = _make_character("Target", fire=2, earth=3, void=2)
         log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
-        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        init_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"
+        ]
         assert len(init_actions) >= 1
         for die in init_actions[0].dice_kept:
             assert die != 10  # 10s should all be converted to 0
@@ -4041,7 +4196,10 @@ class TestKakitaSA:
             mock_die.side_effect = [2, 4, 7, 8, 3, 5, 7]
             log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
 
-        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        init_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"
+        ]
         assert len(init_actions) == 1
         assert 0 not in init_actions[0].dice_kept
         assert sorted(init_actions[0].dice_kept) == [2, 4]
@@ -4055,19 +4213,33 @@ class TestKakitaFirstDan:
         a = _make_kakita("Kakita", knack_rank=1, fire=3, void=2)
         b = _make_character("Target", fire=2, earth=3, void=2)
         log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
-        init_actions = [act for act in log.actions if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"]
+        init_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.INITIATIVE and act.actor == "Kakita"
+        ]
         assert len(init_actions) >= 1
         # Void=2 means normally roll 3 dice. With 1st Dan +1 = 4 dice.
         assert len(init_actions[0].dice_rolled) == 4
 
     def test_first_dan_extra_die_on_double_attack(self) -> None:
         """DA pool is DA_rank + fire + 1 for Kakita with dan >= 1."""
-        a = _make_kakita("Kakita", knack_rank=1, attack_rank=3, double_attack_rank=3, fire=3, earth=3, void=3)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=1,
+            attack_rank=3,
+            double_attack_rank=3,
+            fire=3,
+            earth=3,
+            void=3,
+        )
         b = _make_character("Target", fire=2, earth=3, void=2)
         b.skills = [Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
 
         log = create_combat_log(["Kakita", "Target"], [a.rings.earth.value, b.rings.earth.value])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [5], "Target": [3, 7]}
         void_points = {"Kakita": 0, "Target": 2}
 
@@ -4089,7 +4261,15 @@ class TestKakitaSecondDan:
 
     def test_second_dan_iaijutsu_bonus(self) -> None:
         """Phase 0 iaijutsu attack gets +5 from 2nd Dan."""
-        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, iaijutsu_rank=3, fire=3, earth=3, void=3)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=2,
+            attack_rank=3,
+            iaijutsu_rank=3,
+            fire=3,
+            earth=3,
+            void=3,
+        )
         b = _make_character("Target", fire=2, earth=3, void=2)
         b.skills = [
             Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
@@ -4097,7 +4277,10 @@ class TestKakitaSecondDan:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [3, 3])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [0, 5], "Target": [3, 7]}
         void_points = {"Kakita": 3, "Target": 2}
         dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
@@ -4129,7 +4312,10 @@ class TestKakitaThirdDan:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [3, 3])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [2], "Target": [7]}
         void_points = {"Kakita": 0, "Target": 2}
 
@@ -4155,7 +4341,10 @@ class TestKakitaThirdDan:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [3, 3])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [3], "Target": []}
         void_points = {"Kakita": 0, "Target": 0}
 
@@ -4177,7 +4366,15 @@ class TestKakitaFourthDan:
 
     def test_iaijutsu_damage_bonus(self) -> None:
         """Phase 0 iaijutsu damage gets +5 from 4th Dan."""
-        a = _make_kakita("Kakita", knack_rank=4, attack_rank=4, iaijutsu_rank=4, fire=4, earth=3, void=3)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=4,
+            attack_rank=4,
+            iaijutsu_rank=4,
+            fire=4,
+            earth=3,
+            void=3,
+        )
         b = _make_character("Target", fire=2, earth=4, void=2)
         b.skills = [
             Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
@@ -4185,7 +4382,10 @@ class TestKakitaFourthDan:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [3, 4])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [0, 5], "Target": [3, 7]}
         void_points = {"Kakita": 3, "Target": 2}
         dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
@@ -4211,7 +4411,15 @@ class TestKakitaFifthDan:
 
     def test_5th_dan_contested_iaijutsu(self) -> None:
         """5th Dan triggers contested iaijutsu at phase 0."""
-        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, iaijutsu_rank=5, fire=5, earth=4, void=4)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=5,
+            attack_rank=5,
+            iaijutsu_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+        )
         b = _make_character("Target", fire=3, earth=3, void=3)
         b.skills = [
             Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
@@ -4226,7 +4434,15 @@ class TestKakitaFifthDan:
 
     def test_5th_dan_label_and_opponent_roll(self) -> None:
         """5th Dan contest action has label and shows opponent roll details."""
-        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, iaijutsu_rank=5, fire=5, earth=4, void=4)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=5,
+            attack_rank=5,
+            iaijutsu_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+        )
         b = _make_character("Target", fire=2, earth=3, void=2)
         b.skills = [
             Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
@@ -4234,7 +4450,10 @@ class TestKakitaFifthDan:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [4, 3])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [0, 3, 5], "Target": [4, 7]}
         void_points = {"Kakita": 4, "Target": 2}
         dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
@@ -4279,7 +4498,15 @@ class TestKakitaFifthDan:
 
     def test_5th_dan_extra_damage_dice_on_win(self) -> None:
         """Winning contested roll adds extra damage dice."""
-        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, iaijutsu_rank=5, fire=5, earth=4, void=4)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=5,
+            attack_rank=5,
+            iaijutsu_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+        )
         b = _make_character("Target", fire=2, earth=3, void=2)
         b.skills = [
             Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
@@ -4287,7 +4514,10 @@ class TestKakitaFifthDan:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [4, 3])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [0, 3, 5], "Target": [4, 7]}
         void_points = {"Kakita": 4, "Target": 2}
         dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
@@ -4298,7 +4528,8 @@ class TestKakitaFifthDan:
         with patch("src.engine.simulation.roll_and_keep") as mock_roll:
             # Kakita rolls 30, opponent rolls 10, margin = 20 -> 4 extra dice
             mock_roll.side_effect = [
-                ([10, 8, 7, 5, 4, 3, 2, 1, 1, 1, 1], [10, 8, 7, 5, 4], 30),  # Kakita roll (after +5 2nd dan = 35)
+                # Kakita roll (after +5 2nd dan = 35)
+                ([10, 8, 7, 5, 4, 3, 2, 1, 1, 1, 1], [10, 8, 7, 5, 4], 30),
                 ([5, 3, 2], [5, 3, 2], 10),  # Opponent roll
                 ([8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 1, 1], [8, 7], 15),  # Damage roll
             ]
@@ -4313,7 +4544,15 @@ class TestKakitaFifthDan:
 
     def test_5th_dan_fewer_damage_dice_on_loss(self) -> None:
         """Losing contested roll reduces damage dice."""
-        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, iaijutsu_rank=5, fire=5, earth=4, void=4)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=5,
+            attack_rank=5,
+            iaijutsu_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+        )
         b = _make_character("Target", fire=4, earth=3, void=2)
         b.skills = [
             Skill(name="Attack", rank=5, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
@@ -4322,7 +4561,10 @@ class TestKakitaFifthDan:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [4, 3])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [0, 3, 5], "Target": [4, 7]}
         void_points = {"Kakita": 4, "Target": 2}
         dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
@@ -4331,12 +4573,14 @@ class TestKakitaFifthDan:
 
         from src.engine.simulation import _resolve_kakita_5th_dan
         with patch("src.engine.simulation.roll_and_keep") as mock_roll:
-            # Kakita rolls 10, opponent rolls 30, margin = -15 (after +5 2nd dan, kakita=15, margin=-15)
+            # Kakita rolls 10, opponent rolls 30, margin = -15 (after +5 2nd dan, kakita=15,
+            # margin=-15)
             # fewer_dice = min(4-1, 15//5) = min(3, 3) = 3
             # damage_rolled = 4+5-3 = 6
             mock_roll.side_effect = [
                 ([5, 3, 2, 1, 1, 1, 1, 1, 1, 1, 1], [5, 3, 2, 1, 1], 10),  # Kakita roll
-                ([10, 9, 8, 7, 6, 5, 4, 3, 2], [10, 9, 8, 7], 30),  # Opponent roll (Iaijutsu 5 + Fire 4 = 9k4)
+                # Opponent roll (Iaijutsu 5 + Fire 4 = 9k4)
+                ([10, 9, 8, 7, 6, 5, 4, 3, 2], [10, 9, 8, 7], 30),
                 ([6, 5, 4, 3, 2, 1], [6, 5], 11),  # Damage roll (reduced)
             ]
             _resolve_kakita_5th_dan(
@@ -4354,7 +4598,15 @@ class TestKakitaPhase0Attack:
 
     def test_regular_phase0_costs_1_die(self) -> None:
         """With a phase 0 die, attack consumes only that 1 die."""
-        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, iaijutsu_rank=3, fire=3, earth=3, void=3)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=2,
+            attack_rank=3,
+            iaijutsu_rank=3,
+            fire=3,
+            earth=3,
+            void=3,
+        )
         b = _make_character("Target", fire=2, earth=3, void=2)
         b.skills = [
             Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
@@ -4362,7 +4614,10 @@ class TestKakitaPhase0Attack:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [3, 3])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [0, 3, 7], "Target": [4, 8]}
         void_points = {"Kakita": 3, "Target": 2}
         dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
@@ -4381,7 +4636,15 @@ class TestKakitaPhase0Attack:
 
     def test_interrupt_phase0_costs_2_highest_dice(self) -> None:
         """Without a phase 0 die, interrupt consumes 2 highest (least valuable) dice."""
-        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, iaijutsu_rank=3, fire=3, earth=3, void=3)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=2,
+            attack_rank=3,
+            iaijutsu_rank=3,
+            fire=3,
+            earth=3,
+            void=3,
+        )
         b = _make_character("Target", fire=2, earth=3, void=2)
         b.skills = [
             Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
@@ -4389,7 +4652,10 @@ class TestKakitaPhase0Attack:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [3, 3])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [2, 5, 8], "Target": [4, 8]}
         void_points = {"Kakita": 3, "Target": 2}
         dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
@@ -4408,7 +4674,15 @@ class TestKakitaPhase0Attack:
 
     def test_uses_iaijutsu_skill(self) -> None:
         """Phase 0 attack uses IAIJUTSU action type."""
-        a = _make_kakita("Kakita", knack_rank=2, attack_rank=3, iaijutsu_rank=3, fire=3, earth=3, void=3)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=2,
+            attack_rank=3,
+            iaijutsu_rank=3,
+            fire=3,
+            earth=3,
+            void=3,
+        )
         b = _make_character("Target", fire=2, earth=3, void=2)
         b.skills = [
             Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
@@ -4416,7 +4690,10 @@ class TestKakitaPhase0Attack:
         ]
 
         log = create_combat_log(["Kakita", "Target"], [3, 3])
-        fighters = {"Kakita": {"char": a, "weapon": KATANA}, "Target": {"char": b, "weapon": KATANA}}
+        fighters = {
+            "Kakita": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
         actions_remaining = {"Kakita": [0, 3, 7], "Target": [4, 8]}
         void_points = {"Kakita": 3, "Target": 2}
         dan_points: dict[str, int] = {"Kakita": 0, "Target": 0}
@@ -4620,8 +4897,26 @@ class TestKakitaSmokeTest:
 
     def test_5th_dan_kakita_fight(self) -> None:
         """Two 5th Dan Kakita fight without errors."""
-        a = _make_kakita("K5_1", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
-        b = _make_kakita("K5_2", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        a = _make_kakita(
+            "K5_1",
+            knack_rank=5,
+            attack_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+            air=4,
+            water=4,
+        )
+        b = _make_kakita(
+            "K5_2",
+            knack_rank=5,
+            attack_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+            air=4,
+            water=4,
+        )
         for _ in range(5):
             log = simulate_combat(a, b, KATANA, KATANA, max_rounds=20)
             assert log.combatants == ["K5_1", "K5_2"]
@@ -4635,31 +4930,65 @@ class TestAbility7WoundCheckBonus:
         a = _make_character("Attacker", fire=4, earth=3, void=2)
         b = _make_waveman("Defender", abilities=[(7, 2)], fire=2, earth=3, water=4, void=2)
         log = simulate_combat(a, b, KATANA, KATANA, max_rounds=5)
-        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "Defender"]
+        wc_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.WOUND_CHECK and act.actor == "Defender"
+        ]
         # With water=4, normal would be 5k4.  With ability 7 rank 2, should be 9k4.
         for wc in wc_actions:
-            assert len(wc.dice_rolled) >= 9, f"Expected 9+ rolled dice, got {len(wc.dice_rolled)}: {wc.dice_pool}"
+            assert len(wc.dice_rolled) >= 9, (
+                f"Expected 9+ rolled dice, got {len(wc.dice_rolled)}: {wc.dice_pool}"
+            )
 
     def test_ability7_adds_dice_in_phase0_attack(self) -> None:
         """Ability 7 adds extra rolled dice to wound checks from Kakita Phase 0 attacks."""
         # Kakita 5th Dan attacks at phase 0, defender has ability 7
-        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=5,
+            attack_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+            air=4,
+            water=4,
+        )
         b = _make_waveman("WM", abilities=[(7, 1)], fire=3, earth=3, water=3, void=3)
         log = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
-        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "WM"]
+        wc_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.WOUND_CHECK and act.actor == "WM"
+        ]
         # With water=3, normal = 4k3.  With ability 7 rank 1, should be 6k3 (or more with void).
         for wc in wc_actions:
-            assert len(wc.dice_rolled) >= 6, f"Expected 6+ rolled dice, got {len(wc.dice_rolled)}: {wc.dice_pool}"
+            assert len(wc.dice_rolled) >= 6, (
+                f"Expected 6+ rolled dice, got {len(wc.dice_rolled)}: {wc.dice_pool}"
+            )
 
     def test_ability7_adds_dice_in_5th_dan_iaijutsu(self) -> None:
-        """Ability 7 adds extra rolled dice to wound checks from Kakita 5th Dan contested iaijutsu."""
-        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        """Ability 7 adds extra rolled dice to wound checks
+        from Kakita 5th Dan contested iaijutsu."""
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=5,
+            attack_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+            air=4,
+            water=4,
+        )
         b = _make_waveman("WM", abilities=[(7, 2)], fire=3, earth=3, water=3, void=3)
         log = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
-        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "WM"]
+        wc_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.WOUND_CHECK and act.actor == "WM"
+        ]
         # With water=3, normal = 4k3.  With ability 7 rank 2, should be 8k3 (or more with void).
         for wc in wc_actions:
-            assert len(wc.dice_rolled) >= 8, f"Expected 8+ rolled dice, got {len(wc.dice_rolled)}: {wc.dice_pool}"
+            assert len(wc.dice_rolled) >= 8, (
+                f"Expected 8+ rolled dice, got {len(wc.dice_rolled)}: {wc.dice_pool}"
+            )
 
 
 class TestAbility10RaiseWoundTN:
@@ -4670,7 +4999,10 @@ class TestAbility10RaiseWoundTN:
         a = _make_waveman("Attacker", abilities=[(10, 2)], fire=4, earth=3, void=3)
         b = _make_character("Defender", fire=2, earth=3, water=3, void=2)
         log = simulate_combat(a, b, KATANA, KATANA, max_rounds=10)
-        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "Defender"]
+        wc_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.WOUND_CHECK and act.actor == "Defender"
+        ]
         for wc in wc_actions:
             if wc.base_tn is not None:
                 # effective TN should be base_tn + 10
@@ -4712,19 +5044,39 @@ class TestAbility10RaiseWoundTN:
 
     def test_ability10_in_phase0_wound_check(self) -> None:
         """Ability 10 is applied to wound checks from Kakita phase 0 attacks."""
-        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=5,
+            attack_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+            air=4,
+            water=4,
+        )
         b = _make_waveman("WM", abilities=[(10, 1)], fire=3, earth=3, water=3, void=3)
         # Run several rounds — ability 10 attacker is the one who dealt the damage (Kakita),
-        # but ability 10 belongs to the Wave Man. The Wave Man is the defender here, not the attacker.
+        # but ability 10 belongs to the Wave Man. The Wave Man is the defender here, not the
+        # attacker.
         # Actually, ability 10 raises TN for damage the attacker dealt. The Wave Man has ability 10.
         # So when the Wave Man attacks and the Kakita makes a wound check, the TN is raised.
         # Let's flip: WM attacks, Kakita defends.
         a = _make_waveman("WM", abilities=[(10, 1)], fire=4, earth=3, water=3, void=3)
-        b = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        b = _make_kakita(
+            "Kakita",
+            knack_rank=5,
+            attack_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+            air=4,
+            water=4,
+        )
         log = simulate_combat(a, b, KATANA, KATANA, max_rounds=5)
-        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "Kakita"]
-        # Some wound checks should have raised TN (base_tn set)
-        raised = [wc for wc in wc_actions if wc.base_tn is not None]
+        wc_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.WOUND_CHECK and act.actor == "Kakita"
+        ]
         # At least some damage from the WM should produce wound checks with raised TN
         # (5th Dan contested iaijutsu also deals damage and should use ability 10)
         if wc_actions:
@@ -4737,13 +5089,27 @@ class TestKakitaPhase0WoundCheckAbilities:
 
     def test_kakita_vs_waveman_with_abilities_7_and_10(self) -> None:
         """Wave Man abilities 7 and 10 apply during Kakita phase 0 attacks."""
-        a = _make_kakita("Kakita", knack_rank=5, attack_rank=5, fire=5, earth=4, void=4, air=4, water=4)
+        a = _make_kakita(
+            "Kakita",
+            knack_rank=5,
+            attack_rank=5,
+            fire=5,
+            earth=4,
+            void=4,
+            air=4,
+            water=4,
+        )
         b = _make_waveman("WM", abilities=[(7, 2), (10, 1)], fire=3, earth=3, water=3, void=3)
         log = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
-        wc_actions = [act for act in log.actions if act.action_type == ActionType.WOUND_CHECK and act.actor == "WM"]
+        wc_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.WOUND_CHECK and act.actor == "WM"
+        ]
         for wc in wc_actions:
             # Ability 7 rank 2: +4 extra rolled dice (water=3, normal=4, with ab7=8)
-            assert len(wc.dice_rolled) >= 8, f"Expected 8+ rolled dice with ability 7 rank 2, got {len(wc.dice_rolled)}"
+            assert len(wc.dice_rolled) >= 8, (
+                f"Expected 8+ rolled dice with ability 7 rank 2, got {len(wc.dice_rolled)}"
+            )
 
 
 class TestReactiveParry:
@@ -4814,7 +5180,7 @@ class TestReactiveParry:
         assert _should_reactive_parry(3, 3, 20, 15, 4, 3, 0, 3, False)
 
 
-class TestInterruptParry:
+class TestInterruptParryDecision:
     """Tests for _should_interrupt_parry (2-die interrupt after hit)."""
 
     def test_default_catastrophic_overflow(self) -> None:
@@ -4899,3 +5265,893 @@ class TestPredeclareParry:
 
         # parry=3, air=4 → 7k4, expected≈28 >= 15 → skip
         assert not _should_predeclare_parry(3, 4, 15, False)
+
+
+# =========================================================================
+# Shinjo Bushi Tests
+# =========================================================================
+
+
+def _make_shinjo(
+    name: str,
+    knack_rank: int = 1,
+    attack_rank: int = 3,
+    parry_rank: int = 2,
+    double_attack_rank: int | None = None,
+    lunge_rank: int | None = None,
+    **ring_overrides: int,
+) -> Character:
+    """Helper to create a Shinjo Bushi character."""
+    kwargs = {}
+    for ring_name in ["air", "fire", "earth", "water", "void"]:
+        val = ring_overrides.get(ring_name, 2)
+        kwargs[ring_name] = Ring(name=RingName(ring_name.capitalize()), value=val)
+    da_rank = double_attack_rank if double_attack_rank is not None else knack_rank
+    lng_rank = lunge_rank if lunge_rank is not None else knack_rank
+    return Character(
+        name=name,
+        rings=Rings(**kwargs),
+        school="Shinjo Bushi",
+        school_ring=RingName.AIR,
+        school_knacks=["Double Attack", "Iaijutsu", "Lunge"],
+        skills=[
+            Skill(
+                name="Attack",
+                rank=attack_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
+            Skill(name="Parry", rank=parry_rank, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+            Skill(
+                name="Double Attack",
+                rank=da_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Iaijutsu",
+                rank=knack_rank,
+                skill_type=SkillType.ADVANCED,
+                ring=RingName.FIRE,
+            ),
+            Skill(name="Lunge", rank=lng_rank, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+        ],
+    )
+
+
+class TestShinjoSA:
+    """Shinjo SA: held die bonus = 2 * (10 - die_value) on attack."""
+
+    def test_sa_bonus_on_attack(self) -> None:
+        """SA bonus of 2*(10-die_value) is added to phase 10 attack total."""
+        a = _make_shinjo("Shinjo", knack_rank=3, attack_rank=3, fire=3, air=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(["Shinjo", "Target"], [3, 3])
+        fighters = {
+            "Shinjo": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Shinjo": [3], "Target": [5, 7]}
+        void_points = {"Shinjo": 3, "Target": 2}
+
+        # Phase 10 attack with die_value=3: SA bonus = 2*(10-3) = 14
+        _resolve_attack(
+            log, 10, fighters["Shinjo"], fighters["Target"],
+            "Shinjo", "Target", fighters, actions_remaining, void_points,
+            shinjo_die_value=3,
+        )
+
+        attack_actions = [
+            a for a in log.actions
+            if a.action_type in (ActionType.DOUBLE_ATTACK, ActionType.LUNGE)
+        ]
+        assert len(attack_actions) >= 1
+        assert "shinjo SA: +14" in attack_actions[0].description
+
+    def test_sa_bonus_not_on_damage(self) -> None:
+        """SA bonus is NOT applied to the damage roll."""
+        a = _make_shinjo("Shinjo", knack_rank=3, attack_rank=3, fire=3, air=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(["Shinjo", "Target"], [3, 3])
+        fighters = {
+            "Shinjo": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Shinjo": [1], "Target": [5, 7]}
+        void_points = {"Shinjo": 3, "Target": 2}
+
+        _resolve_attack(
+            log, 10, fighters["Shinjo"], fighters["Target"],
+            "Shinjo", "Target", fighters, actions_remaining, void_points,
+            shinjo_die_value=1,
+        )
+
+        # SA bonus = 2*(10-1) = 18 — should be in attack description but NOT damage
+        dmg_actions = [a for a in log.actions if a.action_type == ActionType.DAMAGE]
+        for dmg in dmg_actions:
+            assert "shinjo SA" not in dmg.description
+
+
+class TestShinjoHoldAction:
+    """Shinjo holds all action dice until phase 10."""
+
+    def test_shinjo_skips_phase_below_10(self) -> None:
+        """Shinjo does not attack at phases < 10."""
+        a = _make_shinjo("Shinjo", knack_rank=1, fire=3, air=3, earth=3, void=2)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+
+        log = create_combat_log(["Shinjo", "Target"], [3, 3])
+        fighters = {
+            "Shinjo": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Shinjo": [5], "Target": [3, 7]}
+        void_points = {"Shinjo": 2, "Target": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Shinjo"], fighters["Target"],
+            "Shinjo", "Target", fighters, actions_remaining, void_points,
+        )
+
+        # Die should still be in actions_remaining (not consumed)
+        assert 5 in actions_remaining["Shinjo"]
+        # No attack action should be logged
+        attack_actions = [
+            a for a in log.actions
+            if a.action_type in (ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE)
+        ]
+        assert len(attack_actions) == 0
+
+
+class TestShinjoFirstDan:
+    """1st Dan: +1 die on initiative, DA, and parry."""
+
+    def test_first_dan_extra_die_on_initiative(self) -> None:
+        """Shinjo 1st Dan adds +1 unkept die on initiative."""
+        a = _make_shinjo("Shinjo", knack_rank=1, fire=3, air=3, earth=3, void=2)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+        init_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.INITIATIVE and act.actor == "Shinjo"
+        ]
+        assert len(init_actions) >= 1
+        # Void=2 → normally 3 dice. Shinjo 1st Dan → 4 dice
+        assert len(init_actions[0].dice_rolled) == 4
+
+    def test_first_dan_extra_die_on_double_attack(self) -> None:
+        """DA pool is DA_rank + fire + 1 for Shinjo with dan >= 1."""
+        a = _make_shinjo(
+            "Shinjo",
+            knack_rank=1,
+            attack_rank=3,
+            double_attack_rank=3,
+            fire=3,
+            air=3,
+            earth=3,
+            void=3,
+        )
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(["Shinjo", "Target"], [3, 3])
+        fighters = {
+            "Shinjo": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Shinjo": [3], "Target": [5, 7]}
+        void_points = {"Shinjo": 3, "Target": 2}
+
+        _resolve_attack(
+            log, 10, fighters["Shinjo"], fighters["Target"],
+            "Shinjo", "Target", fighters, actions_remaining, void_points,
+            shinjo_die_value=3,
+        )
+
+        da_actions = [a for a in log.actions if a.action_type == ActionType.DOUBLE_ATTACK]
+        if da_actions:
+            # DA_rank(3) + Fire(3) + 1st Dan(1) = 7 dice rolled
+            assert len(da_actions[0].dice_rolled) == 7
+
+    def test_first_dan_extra_die_on_parry(self) -> None:
+        """Parry pool is parry_rank + air + 1 for Shinjo 1st Dan."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo("Shinjo", knack_rank=1, parry_rank=3, air=3, earth=3, void=2)
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        # Shinjo needs 2+ dice to parry (keep 1 for attack)
+        actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
+        void_points = {"Attacker": 3, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining, void_points,
+        )
+
+        parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+        if parry_actions:
+            # parry_rank(3) + air(3) + 1st Dan(1) = 7 dice rolled
+            assert len(parry_actions[0].dice_rolled) == 7
+
+
+class TestShinjoSecondDan:
+    """2nd Dan: free raise on parry (+5)."""
+
+    def test_second_dan_free_raise_on_parry(self) -> None:
+        """Shinjo 2nd Dan adds +5 bonus on parry roll."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo("Shinjo", knack_rank=2, parry_rank=3, air=3, earth=3, void=2)
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
+        void_points = {"Attacker": 3, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining, void_points,
+        )
+
+        parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+        if parry_actions:
+            assert "shinjo 2nd Dan: free raise +5" in parry_actions[0].description
+
+
+class TestShinjoThirdDan:
+    """3rd Dan: remaining dice decreased by attack skill after parry."""
+
+    def test_dice_decreased_after_parry(self) -> None:
+        """After parry, remaining dice values are decreased by attack skill rank."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo(
+            "Shinjo",
+            knack_rank=3,
+            attack_rank=3,
+            parry_rank=3,
+            air=3,
+            earth=3,
+            void=2,
+        )
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        # Give Shinjo 3 dice: one will be spent on parry, two remain to be decreased
+        actions_remaining = {"Attacker": [5], "Shinjo": [3, 6, 8]}
+        void_points = {"Attacker": 3, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining, void_points,
+        )
+
+        parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+        if parry_actions:
+            assert "shinjo 3rd Dan: dice decreased by 3" in parry_actions[0].description
+            # After parry at phase 5, die 3 is spent (highest eligible ≤ 5).
+            # Remaining dice [6, 8] decreased by 3 → [3, 5]
+            assert actions_remaining["Shinjo"] == sorted([6 - 3, 8 - 3])
+
+    def test_dice_can_go_negative(self) -> None:
+        """Dice decrease can result in negative values."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo(
+            "Shinjo",
+            knack_rank=3,
+            attack_rank=4,
+            parry_rank=3,
+            air=3,
+            earth=3,
+            void=2,
+        )
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "Shinjo": [2, 3, 5]}
+        void_points = {"Attacker": 3, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining, void_points,
+        )
+
+        parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+        if parry_actions:
+            # Die 5 spent on parry (highest eligible ≤ 5). Remaining [2, 3] decreased by 4
+            assert actions_remaining["Shinjo"] == sorted([2 - 4, 3 - 4])
+            assert any(d < 0 for d in actions_remaining["Shinjo"])
+
+
+class TestShinjoFourthDan:
+    """4th Dan: highest die set to 1 after initiative."""
+
+    def test_highest_die_set_to_1(self) -> None:
+        """After initiative, highest die becomes 1."""
+        a = _make_shinjo("Shinjo", knack_rank=4, fire=3, air=4, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+
+        # Find the initiative action's status_after
+        init_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.INITIATIVE
+            and act.actor == "Shinjo"
+        ]
+        assert len(init_actions) >= 1
+        # The status_after should show the dice after 4th Dan modification
+        status = init_actions[0].status_after
+        if status:
+            shinjo_dice = status["Shinjo"].actions_remaining
+            # At least one die should be 1 (the highest was reset)
+            assert 1 in shinjo_dice
+
+    def test_description_notes_die_change(self) -> None:
+        """Initiative description shows the 4th Dan die adjustment."""
+        a = _make_shinjo("Shinjo", knack_rank=4, fire=3, air=4, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+
+        init_actions = [
+            act for act in log.actions
+            if act.action_type == ActionType.INITIATIVE
+            and act.actor == "Shinjo"
+        ]
+        assert len(init_actions) >= 1
+        desc = init_actions[0].description
+        assert "4th Dan: highest action die" in desc
+        assert "-> 1)" in desc
+
+
+class TestShinjoFifthDan:
+    """5th Dan: parry margin stored as wound check bonus."""
+
+    def test_parry_margin_stored(self) -> None:
+        """Successful parry margin is stored as wound check bonus."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo(
+            "Shinjo",
+            knack_rank=5,
+            attack_rank=4,
+            parry_rank=4,
+            air=4,
+            earth=3,
+            void=3,
+        )
+
+        # Run multiple combats, check that 5th Dan annotation appears
+        found_margin_storage = False
+        for _ in range(20):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=5)
+            for action in log.actions:
+                if (
+                    "shinjo 5th Dan:" in action.description
+                    and "wound check bonus stored" in action.description
+                ):
+                    found_margin_storage = True
+                    break
+            if found_margin_storage:
+                break
+        assert found_margin_storage, "Never saw 5th Dan parry margin stored"
+
+    def test_bonus_applied_to_wound_check(self) -> None:
+        """Stored shinjo bonus can rescue a failed wound check."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo(
+            "Shinjo",
+            knack_rank=5,
+            attack_rank=4,
+            parry_rank=4,
+            air=4,
+            earth=3,
+            void=3,
+        )
+
+        found_bonus_application = False
+        for _ in range(30):
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=5)
+            for action in log.actions:
+                if "shinjo 5th Dan: applied" in action.description:
+                    found_bonus_application = True
+                    break
+            if found_bonus_application:
+                break
+        assert found_bonus_application, "Never saw 5th Dan wound check bonus applied"
+
+class TestSelectShinjoWcBonuses:
+    """Unit tests for _select_shinjo_wc_bonuses bonus selection."""
+
+    def test_no_deficit_returns_empty(self) -> None:
+        """Already passed — no bonuses needed."""
+        assert _select_shinjo_wc_bonuses(0, [10, 20]) == []
+        assert _select_shinjo_wc_bonuses(-5, [10]) == []
+
+    def test_empty_pool_returns_empty(self) -> None:
+        assert _select_shinjo_wc_bonuses(15, []) == []
+
+    def test_single_bonus_passes(self) -> None:
+        """One bonus that fully covers the deficit."""
+        result = _select_shinjo_wc_bonuses(20, [25])
+        assert result == [25]
+
+    def test_stacks_to_pass(self) -> None:
+        """Two bonuses needed to pass; both selected."""
+        result = _select_shinjo_wc_bonuses(40, [16, 32])
+        assert sorted(result) == [16, 32]
+
+    def test_minimum_subset_to_pass(self) -> None:
+        """Only the smallest sufficient subset is used."""
+        # deficit=20, bonuses=[5, 10, 25]. 25 alone is enough.
+        result = _select_shinjo_wc_bonuses(20, [5, 10, 25])
+        assert result == [25]
+
+    def test_minimum_subset_prefers_smaller_total(self) -> None:
+        """When multiple subsets achieve the same SW, prefer less pool spent."""
+        # deficit=15. [10, 12, 20] — 20 alone works (cost 20).
+        # 10+12=22 also works (cost 22). Should pick [20].
+        result = _select_shinjo_wc_bonuses(15, [10, 12, 20])
+        assert result == [20]
+
+    def test_partial_reduction_crosses_boundary(self) -> None:
+        """Can't fully pass but crosses a 10-boundary to save SW."""
+        # deficit=25: 3 SW. Pool=16: new deficit=9 → 1 SW. Saves 2 SW.
+        result = _select_shinjo_wc_bonuses(25, [16])
+        assert result == [16]
+
+    def test_partial_reduction_minimum_spend(self) -> None:
+        """Use minimum bonuses to reach the best achievable SW count."""
+        # deficit=35: 4 SW. Pool [5, 10, 15] = 30.
+        # new deficit = 5 → 1 SW. All three needed? 10+15=25,
+        # deficit-25=10 → 2 SW. 5+15=20, deficit-20=15 → 2 SW.
+        # 5+10+15=30, deficit-30=5 → 1 SW. Need all three.
+        result = _select_shinjo_wc_bonuses(35, [5, 10, 15])
+        assert sorted(result) == [5, 10, 15]
+
+    def test_no_benefit_returns_empty(self) -> None:
+        """Bonus too small to cross a 10-boundary — don't waste it."""
+        # deficit=15: 2 SW. Pool=4: new deficit=11 → still 2 SW.
+        result = _select_shinjo_wc_bonuses(15, [4])
+        assert result == []
+
+    def test_selective_spend_saves_pool(self) -> None:
+        """With large pool, only spend what's needed."""
+        # deficit=12: 2 SW. Pool [5, 8, 20].
+        # 20 alone → passes (0 SW). 8+5=13 → passes (0 SW).
+        # Min cost to pass: 8+5=13 vs 20. Pick [5, 8].
+        result = _select_shinjo_wc_bonuses(12, [5, 8, 20])
+        assert sorted(result) == [5, 8]
+
+    def test_exact_boundary(self) -> None:
+        """Deficit exactly 10 means 1 SW; bonus of 1 reduces to 0 SW."""
+        # deficit=10: 1 SW. +1 → deficit 9... wait, that doesn't pass.
+        # Need to pass: bonus >= 10.
+        result = _select_shinjo_wc_bonuses(10, [10])
+        assert result == [10]
+
+    def test_boundary_just_under(self) -> None:
+        """Deficit=11: 2 SW. Pool=2: deficit=9 → 1 SW. Worth it."""
+        result = _select_shinjo_wc_bonuses(11, [2])
+        assert result == [2]
+
+
+class TestShinjoParryDecision:
+    """Shinjo parry decision: parries with 2+ dice, holds last die for attack; never interrupts."""
+
+    def test_parries_when_multiple_dice(self) -> None:
+        """Shinjo parries when 2+ dice remain."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo("Shinjo", knack_rank=2, parry_rank=3, air=3, earth=3, void=2)
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        # Give Shinjo 2 dice — should parry with one and hold the other
+        actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
+        void_points = {"Attacker": 3, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining, void_points,
+        )
+
+        parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+        attack_actions = [
+            a for a in log.actions
+            if a.action_type in (
+                ActionType.ATTACK, ActionType.DOUBLE_ATTACK,
+                ActionType.LUNGE,
+            ) and a.success
+        ]
+        # If attack hit, there should be a parry attempt
+        if attack_actions:
+            assert len(parry_actions) >= 1
+
+    def test_holds_last_die_for_attack(self) -> None:
+        """Shinjo does NOT parry when only 1 die remains."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo("Shinjo", knack_rank=2, parry_rank=3, air=3, earth=3, void=2)
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        # Give Shinjo only 1 die — should NOT parry
+        actions_remaining = {"Attacker": [5], "Shinjo": [5]}
+        void_points = {"Attacker": 3, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining, void_points,
+        )
+
+        parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+        assert len(parry_actions) == 0
+
+    def test_never_interrupts(self) -> None:
+        """Shinjo never uses interrupt parry (too expensive)."""
+        a = _make_character("Attacker", fire=5, earth=3, void=3)
+        a.skills = [
+            Skill(name="Attack", rank=5, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+        ]
+        b = _make_shinjo("Shinjo", knack_rank=2, parry_rank=3, air=3, earth=3, void=2)
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        # Shinjo has dice but NOT at phase 3 — interrupt would cost 2 dice
+        actions_remaining = {"Attacker": [3], "Shinjo": [5, 7, 9]}
+        void_points = {"Attacker": 3, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 3, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining, void_points,
+        )
+
+        interrupt_actions = [a for a in log.actions if a.action_type == ActionType.INTERRUPT]
+        assert len(interrupt_actions) == 0
+
+    def test_uses_highest_eligible_die(self) -> None:
+        """Shinjo spends the highest die ≤ phase on parry (smallest SA loss)."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo("Shinjo", knack_rank=2, parry_rank=3, air=3, earth=3, void=2)
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        # At phase 7: eligible dice are [2, 5, 7], highest eligible = 7
+        actions_remaining = {"Attacker": [7], "Shinjo": [2, 5, 7, 9]}
+        void_points = {"Attacker": 3, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 7, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining, void_points,
+        )
+
+        parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+        if parry_actions:
+            # Die 7 should have been spent, remaining should have [2, 5, 9] or decreased
+            assert 7 not in actions_remaining["Shinjo"]
+
+
+class TestShinjoPredeclareParry:
+    """Shinjo predeclare behaviour: 3rd Dan+ always predeclares."""
+
+    def test_3rd_dan_always_predeclares(self) -> None:
+        """Shinjo 3rd Dan+ always predeclares parry."""
+        # Even with high parry vs low TN, 3rd Dan still predeclares
+        assert _should_predeclare_parry(
+            defender_parry_rank=5, air_ring=4, attack_tn=10,
+            is_crippled=False,
+            is_shinjo=True, shinjo_dan=3,
+        ) is True
+
+    def test_below_3rd_dan_predeclares_when_helpful(self) -> None:
+        """Shinjo below 3rd Dan predeclares when +5 makes parry viable."""
+        # expected parry + 5 >= attack_tn * 0.8
+        assert _should_predeclare_parry(
+            defender_parry_rank=2, air_ring=3, attack_tn=25,
+            is_crippled=False,
+            is_shinjo=True, shinjo_dan=1,
+        ) is True
+
+    def test_below_3rd_dan_skips_when_hopeless(self) -> None:
+        """Shinjo below 3rd Dan doesn't predeclare when parry is hopeless."""
+        assert _should_predeclare_parry(
+            defender_parry_rank=1, air_ring=2, attack_tn=50,
+            is_crippled=False,
+            is_shinjo=True, shinjo_dan=1,
+        ) is False
+
+    def test_no_predeclare_with_1_die(self) -> None:
+        """Shinjo doesn't predeclare when only 1 die left (save for attack)."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_shinjo(
+            "Shinjo", knack_rank=3, parry_rank=3,
+            air=3, earth=3, void=2,
+        )
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Attacker": [5], "Shinjo": [5]}
+        void_points = {"Attacker": 2, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining,
+            void_points,
+        )
+
+        # With only 1 die, no parry should happen (even at 3rd Dan)
+        parry_actions = [
+            a for a in log.actions
+            if a.action_type == ActionType.PARRY
+        ]
+        assert len(parry_actions) == 0
+
+    def test_predeclare_consumes_highest_eligible_die(self) -> None:
+        """Predeclared Shinjo parry consumes highest die <= phase."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_shinjo(
+            "Shinjo", knack_rank=3, parry_rank=3,
+            air=3, earth=3, void=2,
+        )
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        # Phase 7: eligible dice [2, 5, 7], highest = 7
+        actions_remaining = {"Attacker": [7], "Shinjo": [2, 5, 7, 9]}
+        void_points = {"Attacker": 2, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 7, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining,
+            void_points,
+        )
+
+        # Die 7 consumed by predeclare (whether attack hit or miss)
+        assert 7 not in actions_remaining["Shinjo"]
+
+
+class TestShinjoPhase10Attack:
+    """Shinjo phase 10 attack: uses lowest die for max SA bonus; always DA."""
+
+    def test_uses_lowest_die(self) -> None:
+        """Phase 10 attack picks the lowest remaining die for maximum SA bonus."""
+        a = _make_shinjo("Shinjo", knack_rank=3, attack_rank=3, fire=3, air=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(["Shinjo", "Target"], [3, 3])
+        fighters = {
+            "Shinjo": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Shinjo": [2, 5, 8], "Target": [3, 7]}
+        void_points = {"Shinjo": 3, "Target": 2}
+        matsu_bonuses: dict[str, list[int]] = {"Shinjo": [], "Target": []}
+        shinjo_bonuses: dict[str, list[int]] = {"Shinjo": [], "Target": []}
+        dan_points: dict[str, int] = {"Shinjo": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Shinjo": 0, "Target": 0}
+        lunge_target_bonus: dict[str, int] = {"Shinjo": 0, "Target": 0}
+
+        from src.engine.simulation import _resolve_shinjo_phase10_attack
+        _resolve_shinjo_phase10_attack(
+            log, "Shinjo", "Target", fighters, actions_remaining,
+            void_points, dan_points, temp_void, matsu_bonuses,
+            shinjo_bonuses, lunge_target_bonus,
+        )
+
+        # Die 2 should be consumed (lowest = max SA bonus of 2*(10-2)=16)
+        assert 2 not in actions_remaining["Shinjo"]
+        attack_actions = [
+            a for a in log.actions
+            if a.action_type in (ActionType.DOUBLE_ATTACK, ActionType.LUNGE)
+        ]
+        assert len(attack_actions) >= 1
+        assert "shinjo SA: +16" in attack_actions[0].description
+
+    def test_always_double_attacks(self) -> None:
+        """Shinjo phase 10 attack always uses Double Attack."""
+        a = _make_shinjo(
+            "Shinjo",
+            knack_rank=3,
+            attack_rank=3,
+            double_attack_rank=3,
+            fire=3,
+            air=3,
+            earth=3,
+            void=3,
+        )
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(["Shinjo", "Target"], [3, 3])
+        fighters = {
+            "Shinjo": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Shinjo": [3], "Target": [5, 7]}
+        void_points = {"Shinjo": 3, "Target": 2}
+
+        _resolve_attack(
+            log, 10, fighters["Shinjo"], fighters["Target"],
+            "Shinjo", "Target", fighters, actions_remaining, void_points,
+            shinjo_die_value=3,
+        )
+
+        da_actions = [a for a in log.actions if a.action_type == ActionType.DOUBLE_ATTACK]
+        assert len(da_actions) >= 1
+
+    def test_lunges_when_crippled(self) -> None:
+        """Crippled Shinjo falls back to lunge at phase 10."""
+        a = _make_shinjo("Shinjo", knack_rank=3, attack_rank=3, fire=3, air=3, earth=3, void=3)
+        b = _make_character("Target", fire=2, earth=3, void=2)
+        b.skills = [Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE)]
+
+        log = create_combat_log(["Shinjo", "Target"], [3, 3])
+        log.wounds["Shinjo"].serious_wounds = 3  # Crippled (≥ earth)
+        fighters = {
+            "Shinjo": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining = {"Shinjo": [3], "Target": [5, 7]}
+        void_points = {"Shinjo": 3, "Target": 2}
+
+        _resolve_attack(
+            log, 10, fighters["Shinjo"], fighters["Target"],
+            "Shinjo", "Target", fighters, actions_remaining, void_points,
+            shinjo_die_value=3,
+        )
+
+        lunge_actions = [a for a in log.actions if a.action_type == ActionType.LUNGE]
+        assert len(lunge_actions) >= 1
+
+
+class TestShinjoAttackChoice:
+    """_shinjo_attack_choice decision logic."""
+
+    def test_always_da_when_viable(self) -> None:
+        """Shinjo always chooses DA when not crippled and rank > 0."""
+        choice, void_spend = _shinjo_attack_choice(
+            double_attack_rank=3, fire_ring=3, defender_parry=2,
+            void_available=3, max_void_spend=2, dan=1,
+            is_crippled=False, sa_bonus=14,
+        )
+        assert choice == "double_attack"
+
+    def test_lunge_when_crippled(self) -> None:
+        """Crippled Shinjo always lunges."""
+        choice, _ = _shinjo_attack_choice(
+            double_attack_rank=3, fire_ring=3, defender_parry=2,
+            void_available=3, max_void_spend=2, dan=1,
+            is_crippled=True, sa_bonus=14,
+        )
+        assert choice == "lunge"
+
+    def test_lunge_when_da_rank_0(self) -> None:
+        """Shinjo with DA rank 0 always lunges."""
+        choice, _ = _shinjo_attack_choice(
+            double_attack_rank=0, fire_ring=3, defender_parry=2,
+            void_available=3, max_void_spend=2, dan=1,
+            is_crippled=False, sa_bonus=14,
+        )
+        assert choice == "lunge"
+
+    def test_reserves_void(self) -> None:
+        """Shinjo reserves at least 1 void for wound checks."""
+        _, void_spend = _shinjo_attack_choice(
+            double_attack_rank=1, fire_ring=2, defender_parry=4,
+            void_available=2, max_void_spend=2, dan=1,
+            is_crippled=False, sa_bonus=0,
+        )
+        # With 2 void available, should spend at most 1 (reserve 1)
+        assert void_spend <= 1
+
+
+class TestShinjoSmokeTest:
+    """Integration smoke tests for Shinjo vs various schools."""
+
+    def test_shinjo_vs_base(self) -> None:
+        """Shinjo vs Base runs without errors."""
+        a = _make_shinjo("Shinjo", knack_rank=2, fire=3, air=3, earth=3, void=3)
+        b = _make_character("Base", fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=10)
+        assert log.winner is not None or log.round_number == 10
+
+    def test_shinjo_vs_matsu(self) -> None:
+        """Shinjo vs Matsu runs without errors."""
+        a = _make_shinjo("Shinjo", knack_rank=2, fire=3, air=3, earth=3, void=3)
+        b = _make_matsu("Matsu", knack_rank=2, fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=10)
+        assert log.winner is not None or log.round_number == 10
+
+    def test_shinjo_vs_kakita(self) -> None:
+        """Shinjo vs Kakita runs without errors."""
+        a = _make_shinjo("Shinjo", knack_rank=2, fire=3, air=3, earth=3, void=3)
+        b = _make_kakita("Kakita", knack_rank=2, fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=10)
+        assert log.winner is not None or log.round_number == 10
+
+    def test_shinjo_vs_mirumoto(self) -> None:
+        """Shinjo vs Mirumoto runs without errors."""
+        a = _make_shinjo("Shinjo", knack_rank=2, fire=3, air=3, earth=3, void=3)
+        b = _make_mirumoto("Mirumoto", knack_rank=2, fire=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=10)
+        assert log.winner is not None or log.round_number == 10
+
+    def test_shinjo_vs_shinjo(self) -> None:
+        """Shinjo vs Shinjo runs without errors."""
+        a = _make_shinjo("Shinjo 1", knack_rank=2, fire=3, air=3, earth=3, void=3)
+        b = _make_shinjo("Shinjo 2", knack_rank=2, fire=3, air=3, earth=3, void=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=10)
+        assert log.winner is not None or log.round_number == 10
+
+    def test_high_dan_shinjo_fight(self) -> None:
+        """5th Dan Shinjo fights complete without errors."""
+        a = _make_shinjo(
+            "Shinjo",
+            knack_rank=5,
+            attack_rank=5,
+            parry_rank=5,
+            fire=4,
+            air=5,
+            earth=4,
+            void=4,
+        )
+        b = _make_character("Target", fire=4, earth=4, void=4, air=4, water=4)
+        b.skills = [
+            Skill(name="Attack", rank=4, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            Skill(name="Parry", rank=4, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+        ]
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=10)
+        assert log.winner is not None or log.round_number == 10
+
+    def test_shinjo_phase10_attack_appears(self) -> None:
+        """Verify Shinjo actually attacks at phase 10 in a full combat."""
+        found_phase10 = False
+        for _ in range(10):
+            a = _make_shinjo("Shinjo", knack_rank=3, fire=3, air=3, earth=3, void=3)
+            b = _make_character("Target", fire=3, earth=4, void=3)
+            b.skills = [
+                Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+            ]
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
+            for action in log.actions:
+                if (
+                    action.actor == "Shinjo" and action.phase == 10
+                    and action.action_type in (ActionType.DOUBLE_ATTACK, ActionType.LUNGE)
+                ):
+                    found_phase10 = True
+                    break
+            if found_phase10:
+                break
+        assert found_phase10, "Shinjo never attacked at phase 10"

@@ -187,31 +187,35 @@ class TestWoundCheck:
 
 
 class TestWoundCheckVoid:
-    def test_void_spend_adds_kept_die(self) -> None:
-        """void_spend=1 means kept = water + 1, so (water+1)k(water+1)."""
+    def test_void_spend_adds_rolled_and_kept(self) -> None:
+        """void_spend=1 adds +1k1: (water+1+1)k(water+1) = 4k3."""
         wt = WoundTracker(light_wounds=15, earth_ring=3)
-        with patch("src.engine.combat.roll_and_keep", return_value=([9, 8, 7], [9, 8, 7], 24)) as mock_rak:
-            passed, total, _, _ = make_wound_check(wt, water_ring=2, void_spend=1)
-            # rolled = water+1 = 3, kept = water+void_spend = 3 → 3k3
-            mock_rak.assert_called_once_with(3, 3, explode=True)
+        rv = ([9, 8, 7, 5], [9, 8, 7], 24)
+        with patch("src.engine.combat.roll_and_keep", return_value=rv) as mock_rak:
+            passed, total, _, _ = make_wound_check(
+                wt, water_ring=2, void_spend=1,
+            )
+            # rolled = water+1+void = 4, kept = water+void = 3 → 4k3
+            mock_rak.assert_called_once_with(4, 3, explode=True)
             assert passed is True
 
     def test_void_spend_default_zero_unchanged(self) -> None:
         """Default void_spend=0 keeps original behavior: (water+1)kwater."""
         wt = WoundTracker(light_wounds=10, earth_ring=3)
-        with patch("src.engine.combat.roll_and_keep", return_value=([8, 7, 5], [8, 7], 15)) as mock_rak:
+        rv = ([8, 7, 5], [8, 7], 15)
+        with patch("src.engine.combat.roll_and_keep", return_value=rv) as mock_rak:
             make_wound_check(wt, water_ring=2)
             # rolled = 3, kept = 2 → 3k2 (unchanged)
             mock_rak.assert_called_once_with(3, 2, explode=True)
 
     def test_void_spend_multiple(self) -> None:
-        """void_spend=3 means kept = water + 3, roll_and_keep handles capping."""
+        """void_spend=3 adds +3k3: (water+1+3)k(water+3) = 6k5."""
         wt = WoundTracker(light_wounds=20, earth_ring=3)
-        with patch("src.engine.combat.roll_and_keep", return_value=([9, 8, 7], [9, 8, 7], 24)) as mock_rak:
+        rv = ([9, 8, 7, 6, 5, 4], [9, 8, 7, 6, 5], 35)
+        with patch("src.engine.combat.roll_and_keep", return_value=rv) as mock_rak:
             passed, total, _, _ = make_wound_check(wt, water_ring=2, void_spend=3)
-            # rolled = water+1 = 3, kept = water+void_spend = 5 → 3k5
-            # roll_and_keep will internally cap kept to rolled
-            mock_rak.assert_called_once_with(3, 5, explode=True)
+            # rolled = water+1+void = 6, kept = water+void = 5 → 6k5
+            mock_rak.assert_called_once_with(6, 5, explode=True)
             assert passed is True
 
     def test_void_spend_negative_raises(self) -> None:

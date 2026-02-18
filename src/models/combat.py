@@ -52,6 +52,7 @@ class FighterStatus(BaseModel):
     temp_void_points: int = 0
     dan_points: int = 0
     matsu_bonuses: list[int] = Field(default_factory=list)
+    shinjo_bonuses: list[int] = Field(default_factory=list)
 
 
 class CombatAction(BaseModel):
@@ -65,7 +66,8 @@ class CombatAction(BaseModel):
     dice_kept: list[int] = Field(default_factory=list)
     total: int = 0
     tn: Optional[int] = None
-    base_tn: Optional[int] = None  # Original TN before ability-10 raise (serious wound calc uses this)
+    # Original TN before ability-10 raise (serious wound calc uses this)
+    base_tn: Optional[int] = None
     success: Optional[bool] = None
     description: str = ""
     dice_pool: str = ""

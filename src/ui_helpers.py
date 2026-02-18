@@ -12,7 +12,10 @@ from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
 from src.models.weapon import Weapon
 
 # Annotations worth surfacing from action descriptions.
-_ANNOTATION_KEYWORDS = ("void", "pre-declared", "converted", "wave man", "mirumoto", "matsu", "kakita", " dan", "crippled")
+_ANNOTATION_KEYWORDS = (
+    "void", "pre-declared", "converted", "wave man",
+    "mirumoto", "matsu", "kakita", "shinjo", " dan", "crippled",
+)
 
 
 def _md_to_html(text: str) -> str:
@@ -68,7 +71,10 @@ def _group_action_sequences(
     current: list[CombatAction] = []
 
     for action in actions:
-        if action.action_type in (ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE, ActionType.IAIJUTSU):
+        if action.action_type in (
+            ActionType.ATTACK, ActionType.DOUBLE_ATTACK,
+            ActionType.LUNGE, ActionType.IAIJUTSU,
+        ):
             if current:
                 sequences.append(current)
             current = [action]
@@ -122,7 +128,10 @@ def render_winner_banner(log: CombatLog) -> None:
 
 def compute_combat_stats(log: CombatLog) -> dict:
     """Compute summary statistics from a combat log."""
-    _ATTACK_TYPES = {ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE, ActionType.IAIJUTSU}
+    _ATTACK_TYPES = {
+        ActionType.ATTACK, ActionType.DOUBLE_ATTACK,
+        ActionType.LUNGE, ActionType.IAIJUTSU,
+    }
     attacks = [a for a in log.actions if a.action_type in _ATTACK_TYPES]
     hits = [a for a in attacks if a.success]
     parries = [a for a in log.actions if a.action_type == ActionType.PARRY]
@@ -154,7 +163,12 @@ def compute_combat_stats(log: CombatLog) -> dict:
     wound_checks = [a for a in log.actions if a.action_type == ActionType.WOUND_CHECK]
     wc_failed_by_10 = sum(
         1 for wc in wound_checks
-        if not wc.success and wc.tn is not None and ((wc.base_tn if wc.base_tn is not None else wc.tn) - wc.total) >= 10
+        if not wc.success
+        and wc.tn is not None
+        and (
+            (wc.base_tn if wc.base_tn is not None else wc.tn)
+            - wc.total
+        ) >= 10
     )
 
     return {
@@ -237,22 +251,30 @@ _ACTION_ICONS = {
 }
 
 
+def _da_auto_serious(description: str) -> int:
+    """Extract automatic serious wounds from double attack noted in description."""
+    m = re.search(r"\(plus (\d+) automatic SW from double attack\)", description)
+    return int(m.group(1)) if m else 0
+
+
 def _wound_check_icon(action: CombatAction) -> str:
     """Return the icon(s) for a wound check action based on outcome.
 
     - Passed (light wounds kept): 🖤
     - Failed or deliberately converted: 💔 per serious wound taken
+    Includes automatic serious wounds from double attack if present.
     """
+    da_auto = _da_auto_serious(action.description)
     if action.success and "converted" not in action.description:
-        return "🖤"
+        return "💔" * da_auto + "🖤" if da_auto else "🖤"
     if action.success:
         # Deliberate conversion: always 1 serious wound
-        return "💔"
+        return "💔" * (1 + da_auto)
     # Failed: 1 + overflow serious wounds from the roll
     # Use base_tn (ignoring ability-10 raise) for serious wound calculation
     tn_for_sw = action.base_tn if action.base_tn is not None else action.tn
     serious = 1 + max(0, (tn_for_sw - action.total) // 10)
-    return "💔" * serious
+    return "💔" * (serious + da_auto)
 
 
 def _parry_icon(action: CombatAction) -> str:
@@ -311,8 +333,28 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
             else:
                 tn_for_sw = action.base_tn if action.base_tn is not None else action.tn
                 serious = 1 + ((tn_for_sw - action.total) // 10)
-                if serious > 1:
-                    result = f"**FAILED, takes {serious} serious wounds**"
+                da_auto = _da_auto_serious(action.description)
+                total_sw = serious + da_auto
+                if total_sw > 1:
+                    if da_auto:
+                        from_lw = (
+                            " from the light wounds"
+                            if serious > 0 else ""
+                        )
+                        da_note = (
+                            f"{from_lw} (plus {da_auto}"
+                            f" automatic SW from"
+                            f" double attack)"
+                        )
+                        result = (
+                            f"**FAILED, takes {serious}"
+                            f" serious wounds{da_note}**"
+                        )
+                    else:
+                        result = (
+                            f"**FAILED, takes {total_sw}"
+                            f" serious wounds**"
+                        )
                 else:
                     result = "**FAILED**"
     else:
@@ -337,9 +379,13 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
 
     if action.action_type == ActionType.INITIATIVE:
         phases = ", ".join(str(d) for d in action.dice_kept)
+        # Surface parenthetical annotations from the description
+        # (e.g. Shinjo 4th Dan die change)
+        annotations = extract_annotations(action.description)
+        ann_str = f" {annotations}" if annotations else ""
         text = (
             f"{icon} **{phase_str}** | {action.actor} | "
-            f"Action dice: phases {phases}{dice_str}"
+            f"Action dice: phases {phases}{dice_str}{ann_str}"
         )
     else:
         pool_prefix = f"{action.dice_pool} " if action.dice_pool else ""
@@ -392,6 +438,9 @@ def _format_fighter_status(name: str, status: FighterStatus) -> str:
     if status.matsu_bonuses:
         bonuses_str = ", ".join(f"+{b}" for b in status.matsu_bonuses)
         parts.append(f"3rd Dan bonuses: {bonuses_str}")
+    if status.shinjo_bonuses:
+        bonuses_str = ", ".join(f"+{b}" for b in status.shinjo_bonuses)
+        parts.append(f"Shinjo WC bonuses: {bonuses_str}")
     if status.is_mortally_wounded:
         parts.append("**MORTAL**")
     elif status.is_crippled:

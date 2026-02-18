@@ -1,9 +1,7 @@
 """Tests for XP-based character builder."""
 
-import pytest
 
 from src.engine.xp_builder import (
-    ComputedStats,
     DEFAULT_COMBAT_PROGRESSION,
     advanced_skill_raise_cost,
     build_character_from_xp,

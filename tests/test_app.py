@@ -7,12 +7,19 @@ from streamlit.testing.v1 import AppTest
 from src.engine.kakita import compute_kakita_stats_from_xp
 from src.engine.matsu import compute_matsu_stats_from_xp
 from src.engine.mirumoto import compute_mirumoto_stats_from_xp
-from src.engine.xp_builder import compute_stats_from_xp
 from src.engine.waveman import compute_waveman_stats_from_xp
-from src.models.combat import ActionType, CombatAction, CombatLog
+from src.engine.xp_builder import compute_stats_from_xp
+from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
 from src.models.weapon import WeaponType
-from src.models.combat import FighterStatus
-from src.ui_helpers import _damage_icon, _format_fighter_status, _group_action_sequences, _parry_icon, _wound_check_icon, compute_combat_stats, extract_annotations
+from src.ui_helpers import (
+    _damage_icon,
+    _format_fighter_status,
+    _group_action_sequences,
+    _parry_icon,
+    _wound_check_icon,
+    compute_combat_stats,
+    extract_annotations,
+)
 
 
 class TestAppLoads:
@@ -339,8 +346,37 @@ class TestWoundCheckIcon:
     def test_converted_wound_check_broken_heart(self) -> None:
         action = _action(ActionType.WOUND_CHECK, actor="A")
         action.success = True
-        action.description = "A wound check: passed (rolled 25) — converted light wounds to 1 serious wound"
+        action.description = (
+            "A wound check: passed (rolled 25)"
+            " — converted light wounds to 1 serious wound"
+        )
         assert _wound_check_icon(action) == "💔"
+
+
+    def test_failed_with_da_auto_sw(self) -> None:
+        """DA auto SW adds to icon count."""
+        action = _action(ActionType.WOUND_CHECK, actor="A")
+        action.success = False
+        action.tn = 54
+        action.total = 41
+        action.description = (
+            "A wound check: failed (rolled 41)"
+            " (plus 1 automatic SW from double attack)"
+        )
+        # WC serious = 1 + (54-41)//10 = 2, DA auto = 1, total = 3
+        assert _wound_check_icon(action) == "💔💔💔"
+
+    def test_passed_with_da_auto_sw(self) -> None:
+        """Passed WC with DA auto SW still shows the auto SW icon."""
+        action = _action(ActionType.WOUND_CHECK, actor="A")
+        action.success = True
+        action.tn = 20
+        action.total = 25
+        action.description = (
+            "A wound check: passed (rolled 25)"
+            " (plus 1 automatic SW from double attack)"
+        )
+        assert _wound_check_icon(action) == "💔🖤"
 
 
 class TestParryIcon:
@@ -429,21 +465,39 @@ class TestComputeCombatStats:
         log = CombatLog(combatants=["A", "B"])
         # First hit: B goes from 0 to 1 SW
         log.add_action(CombatAction(
-            phase=3, actor="A", action_type=ActionType.DAMAGE, target="B", total=20,
-            status_after={"A": FighterStatus(serious_wounds=0), "B": FighterStatus(serious_wounds=0)},
+            phase=3, actor="A",
+            action_type=ActionType.DAMAGE, target="B", total=20,
+            status_after={
+                "A": FighterStatus(serious_wounds=0),
+                "B": FighterStatus(serious_wounds=0),
+            },
         ))
         log.add_action(CombatAction(
-            phase=3, actor="B", action_type=ActionType.WOUND_CHECK, total=10, tn=20, success=False,
-            status_after={"A": FighterStatus(serious_wounds=0), "B": FighterStatus(serious_wounds=1)},
+            phase=3, actor="B",
+            action_type=ActionType.WOUND_CHECK,
+            total=10, tn=20, success=False,
+            status_after={
+                "A": FighterStatus(serious_wounds=0),
+                "B": FighterStatus(serious_wounds=1),
+            },
         ))
         # Second hit: B goes from 1 to 3 SW (DA serious + failed WC)
         log.add_action(CombatAction(
-            phase=5, actor="A", action_type=ActionType.DAMAGE, target="B", total=30,
-            status_after={"A": FighterStatus(serious_wounds=0), "B": FighterStatus(serious_wounds=2)},
+            phase=5, actor="A",
+            action_type=ActionType.DAMAGE, target="B", total=30,
+            status_after={
+                "A": FighterStatus(serious_wounds=0),
+                "B": FighterStatus(serious_wounds=2),
+            },
         ))
         log.add_action(CombatAction(
-            phase=5, actor="B", action_type=ActionType.WOUND_CHECK, total=10, tn=30, success=False,
-            status_after={"A": FighterStatus(serious_wounds=0), "B": FighterStatus(serious_wounds=3)},
+            phase=5, actor="B",
+            action_type=ActionType.WOUND_CHECK,
+            total=10, tn=30, success=False,
+            status_after={
+                "A": FighterStatus(serious_wounds=0),
+                "B": FighterStatus(serious_wounds=3),
+            },
         ))
         stats = compute_combat_stats(log)
         # Biggest single delta: 1→2 on damage (DA serious) + 2→3 on WC = 2 total from SW=1
@@ -905,7 +959,10 @@ class TestKakitaUI:
 
     def test_kakita_5th_dan_damage_notes_extracted(self) -> None:
         """extract_annotations picks up won/lost margin notes with Dan."""
-        desc = "Kakita 5th Dan iaijutsu damage: 14k2 = 23 (won by 16: +3 rolled, 4th Dan free raise: +5)"
+        desc = (
+            "Kakita 5th Dan iaijutsu damage: 14k2 = 23"
+            " (won by 16: +3 rolled, 4th Dan free raise: +5)"
+        )
         result = extract_annotations(desc)
         assert "4th Dan free raise: +5" in result
 
@@ -927,3 +984,35 @@ class TestIaijutsuActionSequence:
         assert seqs[0][0].action_type == ActionType.INITIATIVE
         assert seqs[1][0].action_type == ActionType.IAIJUTSU
         assert len(seqs[1]) == 3
+
+
+class TestShinjoUI:
+    """Tests for Shinjo Bushi build mode UI."""
+
+    def test_shinjo_option_loads(self) -> None:
+        """Selecting 'Shinjo Bushi' doesn't crash."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Shinjo Bushi").run()
+        assert not at.exception
+
+    def test_shinjo_fight_works(self) -> None:
+        """Two Shinjo Bushi can fight without errors."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Shinjo Bushi").run()
+        at.selectbox(key="f2_preset").set_value("Shinjo Bushi").run()
+        at.button[0].click().run()
+        assert not at.exception
+        has_result = len(at.success) > 0 or len(at.warning) > 0
+        assert has_result
+
+    def test_shinjo_shows_knack_sliders(self) -> None:
+        """Shinjo mode has knack slider widgets."""
+        at = AppTest.from_file("src/app.py", default_timeout=10)
+        at.run()
+        at.selectbox(key="f1_preset").set_value("Shinjo Bushi").run()
+        assert not at.exception
+        assert at.slider(key="f1_knack_double_attack") is not None
+        assert at.slider(key="f1_knack_iaijutsu") is not None
+        assert at.slider(key="f1_knack_lunge") is not None

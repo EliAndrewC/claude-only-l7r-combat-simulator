@@ -20,7 +20,7 @@ def roll_initiative(
     character: Character,
     extra_unkept: int = 0,
 ) -> CombatAction:
-    """Roll initiative: (Void + 1 + extra_unkept) dice, drop (1 + extra_unkept) highest, keep the rest.
+    """Roll initiative: (Void+1+extra_unkept) dice, drop highest, keep rest.
 
     No exploding 10s. Each kept die = a phase the character acts in.
 
@@ -155,13 +155,14 @@ def make_wound_check(
 ) -> tuple[bool, int, list[int], list[int]]:
     """Make a wound check against the current light wound total.
 
-    Roll (Water + 1 + extra_rolled)k(Water + void_spend) vs TN = light_wounds + tn_bonus.
+    Roll (Water+1+extra_rolled+void_spend)k(Water+void_spend)
+    vs TN = light_wounds + tn_bonus.
     Failure: 1 serious wound + 1 per 10 failed by (using original TN, not raised).
 
     Args:
         wound_tracker: The character's current wound state.
         water_ring: The character's Water ring value.
-        void_spend: Void points spent. Each adds one kept die.
+        void_spend: Void points spent. Each adds +1k1 (1 rolled and 1 kept).
         extra_rolled: Extra unkept dice to roll (e.g. from ability 7).
         tn_bonus: Bonus added to TN for pass/fail (e.g. from ability 10).
             Serious wound calculation uses the original TN.
@@ -174,7 +175,7 @@ def make_wound_check(
     """
     if void_spend < 0:
         raise ValueError(f"void_spend must be >= 0, got {void_spend}")
-    rolled = water_ring + 1 + extra_rolled
+    rolled = water_ring + 1 + extra_rolled + void_spend
     kept = water_ring + void_spend
     base_tn = wound_tracker.light_wounds
     effective_tn = base_tn + tn_bonus

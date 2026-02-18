@@ -62,7 +62,10 @@ class TestComputeAbilities:
             abilities = compute_abilities(xp)
             expected_nums = sorted(WAVE_MAN_ABILITY_ORDER[:count])
             actual_nums = sorted(ab.number for ab in abilities)
-            assert actual_nums == expected_nums, f"At {xp} XP, expected {expected_nums}, got {actual_nums}"
+            assert actual_nums == expected_nums, (
+                f"At {xp} XP, expected {expected_nums},"
+                f" got {actual_nums}"
+            )
 
 
 class TestBuildWavemanFromXP:

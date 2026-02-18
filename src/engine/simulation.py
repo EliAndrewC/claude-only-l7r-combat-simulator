@@ -5,6 +5,7 @@ Runs a full combat between two characters using the core engine primitives.
 
 from __future__ import annotations
 
+import math
 import random
 
 from src.engine.combat import (
@@ -15,8 +16,6 @@ from src.engine.combat import (
     roll_damage,
     roll_initiative,
 )
-import math
-
 from src.engine.dice import reroll_tens, roll_and_keep
 from src.models.character import Character, RingName
 from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
@@ -139,6 +138,7 @@ def _should_convert_light_to_serious(
     serious_wounds: int,
     earth_ring: int,
     water_ring: int = 2,
+    shinjo_wc_bonus_pool: int = 0,
 ) -> bool:
     """Decide whether to convert light wounds to 1 serious wound on a passed wound check.
 
@@ -162,6 +162,10 @@ def _should_convert_light_to_serious(
     average wound check roll as a baseline for "what you can absorb" and
     convert when the light wounds push the TN far enough past that baseline.
 
+    Shinjo 5th Dan banked wound check bonuses effectively raise the
+    threshold: a pool of +33 means the character can safely absorb 33
+    more light wounds before the risk outweighs converting.
+
     Threshold examples (placeholder — intended to be tuned by simulation):
         Water 1 → 10   (bad wound check, converts anything above 10)
         Water 2 → 12
@@ -174,6 +178,8 @@ def _should_convert_light_to_serious(
         serious_wounds: Current serious wound count.
         earth_ring: Character's Earth ring value.
         water_ring: Character's Water ring value (determines wound check power).
+        shinjo_wc_bonus_pool: Sum of banked Shinjo 5th Dan wound check
+            bonuses.  Raises the keep-threshold by this amount.
 
     Returns:
         True if the character should take 1 serious wound and reset light wounds to 0.
@@ -205,6 +211,11 @@ def _should_convert_light_to_serious(
     would_cripple = serious_wounds + 1 >= earth_ring
     if would_cripple:
         threshold = round(threshold * 1.5)
+
+    # Shinjo 5th Dan: banked wound check bonuses act as a safety net,
+    # letting the character absorb more light wounds before needing to
+    # convert.  Add the full pool to the threshold.
+    threshold += shinjo_wc_bonus_pool
 
     return light_wounds > threshold
 
@@ -535,6 +546,7 @@ def _resolve_kakita_phase0_attack(
     temp_void: dict[str, int],
     matsu_bonuses: dict[str, list[int]],
     lunge_target_bonus: dict[str, int],
+    shinjo_bonuses: dict[str, list[int]] | None = None,
 ) -> None:
     """Execute a Phase 0 iaijutsu interrupt attack.
 
@@ -594,7 +606,11 @@ def _resolve_kakita_phase0_attack(
         kakita_bonus = atk_rank * gap
         if kakita_bonus > 0:
             total += kakita_bonus
-            bonus_note += f" (kakita 3rd Dan: +{kakita_bonus}, {gap} {'phase' if gap == 1 else 'phases'})"
+            phase_word = 'phase' if gap == 1 else 'phases'
+            bonus_note += (
+                f" (kakita 3rd Dan: +{kakita_bonus},"
+                f" {gap} {phase_word})"
+            )
 
     # TN = standard attack TN
     tn = 5 + 5 * def_parry_rank
@@ -610,10 +626,18 @@ def _resolve_kakita_phase0_attack(
         total=total,
         tn=tn,
         success=success,
-        description=f"{attacker_name} phase 0 iaijutsu{'' if has_phase0 else ' (interrupt)'}: {_format_pool_with_overflow(rolled, kept)} vs TN {tn}{bonus_note}",
+        description=(
+            f"{attacker_name} phase 0 iaijutsu"
+            f"{'' if has_phase0 else ' (interrupt)'}: "
+            f"{_format_pool_with_overflow(rolled, kept)}"
+            f" vs TN {tn}{bonus_note}"
+        ),
         dice_pool=_format_pool_with_overflow(rolled, kept),
     )
-    attack_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+    attack_action.status_after = _snapshot_status(
+        log, fighters, actions_remaining, void_points,
+        dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+    )
     log.add_action(attack_action)
 
     if not success:
@@ -649,7 +673,10 @@ def _resolve_kakita_phase0_attack(
     wound_tracker = log.wounds[defender_name]
     wound_tracker.light_wounds += dmg_total
 
-    damage_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+    damage_action.status_after = _snapshot_status(
+        log, fighters, actions_remaining, void_points,
+        dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+    )
     log.add_action(damage_action)
 
     # --- Wound check (reuse standard wound check logic) ---
@@ -671,10 +698,58 @@ def _resolve_kakita_phase0_attack(
     wc_from_temp, wc_from_reg = _spend_void(void_points, temp_void, defender_name, void_spend)
     wc_void_label = _void_spent_label(wc_from_temp, wc_from_reg)
 
+    def_is_shinjo = defender.school == "Shinjo Bushi"
+    def_dan_shinjo = defender.dan if def_is_shinjo else 0
+
+    sw_before_wc = wound_tracker.serious_wounds
+
     passed, wc_total, wc_all_dice, wc_kept_dice = make_wound_check(
         wound_tracker, water_value, void_spend=void_spend,
         extra_rolled=ab7_extra + matsu_wc_extra, tn_bonus=ab10_bonus,
     )
+
+    # Shinjo 5th Dan: apply stored bonuses after seeing the roll
+    shinjo_bonus_note = ""
+    if (def_is_shinjo and def_dan_shinjo >= 5
+            and not passed and shinjo_bonuses
+            and shinjo_bonuses[defender_name]):
+        base_tn = wound_tracker.light_wounds
+        raw_deficit = base_tn - wc_total
+        used = _select_shinjo_wc_bonuses(
+            raw_deficit, shinjo_bonuses[defender_name],
+        )
+        if used:
+            bonus_applied = sum(used)
+            wc_total += bonus_applied
+            remaining = list(shinjo_bonuses[defender_name])
+            for b in used:
+                remaining.remove(b)
+            shinjo_bonuses[defender_name][:] = remaining
+            sw_added_by_wc = wound_tracker.serious_wounds - sw_before_wc
+            new_deficit = base_tn - wc_total
+            if new_deficit <= 0:
+                new_sw = 0
+                passed = True
+            else:
+                new_sw = 1 + (new_deficit // 10)
+            wound_tracker.serious_wounds += (new_sw - sw_added_by_wc)
+            bonus_str = ", ".join(f"+{b}" for b in used)
+            total_str = f" = +{bonus_applied}" if len(used) > 1 else ""
+            if passed:
+                shinjo_bonus_note = (
+                    f" (shinjo 5th Dan: applied"
+                    f" {bonus_str}{total_str},"
+                    f" wound check passes)"
+                )
+            else:
+                sw_saved = sw_added_by_wc - new_sw
+                shinjo_bonus_note = (
+                    f" (shinjo 5th Dan: applied"
+                    f" {bonus_str}{total_str},"
+                    f" {sw_saved} serious wound"
+                    f"{'s' if sw_saved != 1 else ''}"
+                    f" prevented)"
+                )
 
     void_note = f" ({wc_void_label})" if wc_void_label else ""
     wc_base_tn = wound_tracker.light_wounds
@@ -683,11 +758,18 @@ def _resolve_kakita_phase0_attack(
     # Feature 3: Wound check success choice
     convert_note = ""
     if passed:
+        def_shinjo_pool = 0
+        if (shinjo_bonuses
+                and def_is_shinjo and def_dan_shinjo >= 5):
+            def_shinjo_pool = sum(
+                shinjo_bonuses[defender_name]
+            )
         should_convert = _should_convert_light_to_serious(
             wound_tracker.light_wounds,
             wound_tracker.serious_wounds,
             wound_tracker.earth_ring,
             water_ring=water_value,
+            shinjo_wc_bonus_pool=def_shinjo_pool,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -696,8 +778,11 @@ def _resolve_kakita_phase0_attack(
         else:
             convert_note = f" — keeping {wound_tracker.light_wounds} light wounds"
 
-    ab10_note = f" (TN {wc_tn} from {wc_base_tn} LW due to wave man ability)" if ab10_bonus > 0 else ""
-    wc_rolled = water_value + 1 + ab7_extra + matsu_wc_extra
+    ab10_note = (
+        f" (TN {wc_tn} from {wc_base_tn} LW due to wave man ability)"
+        if ab10_bonus > 0 else ""
+    )
+    wc_rolled = water_value + 1 + ab7_extra + matsu_wc_extra + void_spend
     wc_kept = water_value + void_spend
     wc_action = CombatAction(
         phase=0,
@@ -711,7 +796,7 @@ def _resolve_kakita_phase0_attack(
         success=passed,
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
-            f"(rolled {wc_total}){void_note}{convert_note}{ab10_note}"
+            f"(rolled {wc_total}){void_note}{shinjo_bonus_note}{convert_note}{ab10_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )
@@ -720,7 +805,10 @@ def _resolve_kakita_phase0_attack(
     if not passed:
         wound_tracker.light_wounds = 0
 
-    wc_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+    wc_action.status_after = _snapshot_status(
+        log, fighters, actions_remaining, void_points,
+        dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+    )
 
 
 def _resolve_kakita_5th_dan(
@@ -733,6 +821,7 @@ def _resolve_kakita_5th_dan(
     dan_points: dict[str, int],
     temp_void: dict[str, int],
     matsu_bonuses: dict[str, list[int]],
+    shinjo_bonuses: dict[str, list[int]] | None = None,
 ) -> None:
     """Resolve 5th Dan Kakita contested iaijutsu at phase 0.
 
@@ -749,8 +838,6 @@ def _resolve_kakita_5th_dan(
     # Kakita's iaijutsu roll
     iaijutsu_skill = attacker.get_skill("Iaijutsu")
     iaijutsu_rank = iaijutsu_skill.rank if iaijutsu_skill else 0
-    atk_skill = attacker.get_skill("Attack")
-    atk_rank = atk_skill.rank if atk_skill else 0
     fire_ring = attacker.rings.fire.value
 
     kakita_rolled = iaijutsu_rank + fire_ring
@@ -759,7 +846,9 @@ def _resolve_kakita_5th_dan(
         kakita_rolled += 1
 
     attacker_crippled = log.wounds[attacker_name].is_crippled
-    k_all, k_kept, kakita_total = roll_and_keep(kakita_rolled, kakita_kept, explode=not attacker_crippled)
+    k_all, k_kept, kakita_total = roll_and_keep(
+        kakita_rolled, kakita_kept, explode=not attacker_crippled,
+    )
 
     # Accumulate bonuses with descriptions
     bonus_notes: list[str] = []
@@ -801,7 +890,7 @@ def _resolve_kakita_5th_dan(
     # Extra raise if opponent has no iaijutsu (uses attack instead)
     if no_iaijutsu:
         kakita_total += 5
-        bonus_notes.append(f"no opponent iaijutsu: +5")
+        bonus_notes.append("no opponent iaijutsu: +5")
 
     # Log contested roll
     margin = kakita_total - opp_total
@@ -821,7 +910,10 @@ def _resolve_kakita_5th_dan(
             opp_dice_display.append(f"~~{d}~~")
     opp_dice_str = f"[{', '.join(opp_dice_display)}]"
 
-    opp_tn_desc = f"vs TN {opp_total} ({defender_name}'s {opp_pool} {opp_skill_name} {opp_dice_str})"
+    opp_tn_desc = (
+        f"vs TN {opp_total} ({defender_name}'s"
+        f" {opp_pool} {opp_skill_name} {opp_dice_str})"
+    )
     contest_action = CombatAction(
         phase=0,
         actor=attacker_name,
@@ -842,7 +934,10 @@ def _resolve_kakita_5th_dan(
         label="5th Dan iaijutsu",
         tn_description=opp_tn_desc,
     )
-    contest_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+    contest_action.status_after = _snapshot_status(
+        log, fighters, actions_remaining, void_points,
+        dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+    )
     log.add_action(contest_action)
 
     # Damage roll
@@ -878,7 +973,11 @@ def _resolve_kakita_5th_dan(
         dice_rolled=dmg_all,
         dice_kept=dmg_kept_dice,
         total=dmg_total,
-        description=f"{attacker_name} 5th Dan iaijutsu damage: {_format_pool_with_overflow(damage_rolled, damage_kept)} = {dmg_total}{dmg_note_str}",
+        description=(
+            f"{attacker_name} 5th Dan iaijutsu damage: "
+            f"{_format_pool_with_overflow(damage_rolled, damage_kept)}"
+            f" = {dmg_total}{dmg_note_str}"
+        ),
         dice_pool=_format_pool_with_overflow(damage_rolled, damage_kept),
         label="5th Dan iaijutsu damage",
     )
@@ -887,7 +986,10 @@ def _resolve_kakita_5th_dan(
     wound_tracker = log.wounds[defender_name]
     wound_tracker.light_wounds += dmg_total
 
-    damage_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+    damage_action.status_after = _snapshot_status(
+        log, fighters, actions_remaining, void_points,
+        dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+    )
     log.add_action(damage_action)
 
     # Wound check
@@ -908,10 +1010,58 @@ def _resolve_kakita_5th_dan(
     wc_from_temp, wc_from_reg = _spend_void(void_points, temp_void, defender_name, void_spend)
     wc_void_label = _void_spent_label(wc_from_temp, wc_from_reg)
 
+    def_is_shinjo = defender.school == "Shinjo Bushi"
+    def_dan_shinjo = defender.dan if def_is_shinjo else 0
+
+    sw_before_wc = wound_tracker.serious_wounds
+
     passed, wc_total, wc_all_dice, wc_kept_dice = make_wound_check(
         wound_tracker, water_value, void_spend=void_spend,
         extra_rolled=ab7_extra + matsu_wc_extra, tn_bonus=ab10_bonus,
     )
+
+    # Shinjo 5th Dan: apply stored bonuses after seeing the roll
+    shinjo_bonus_note = ""
+    if (def_is_shinjo and def_dan_shinjo >= 5
+            and not passed and shinjo_bonuses
+            and shinjo_bonuses[defender_name]):
+        base_tn = wound_tracker.light_wounds
+        raw_deficit = base_tn - wc_total
+        used = _select_shinjo_wc_bonuses(
+            raw_deficit, shinjo_bonuses[defender_name],
+        )
+        if used:
+            bonus_applied = sum(used)
+            wc_total += bonus_applied
+            remaining = list(shinjo_bonuses[defender_name])
+            for b in used:
+                remaining.remove(b)
+            shinjo_bonuses[defender_name][:] = remaining
+            sw_added_by_wc = wound_tracker.serious_wounds - sw_before_wc
+            new_deficit = base_tn - wc_total
+            if new_deficit <= 0:
+                new_sw = 0
+                passed = True
+            else:
+                new_sw = 1 + (new_deficit // 10)
+            wound_tracker.serious_wounds += (new_sw - sw_added_by_wc)
+            bonus_str = ", ".join(f"+{b}" for b in used)
+            total_str = f" = +{bonus_applied}" if len(used) > 1 else ""
+            if passed:
+                shinjo_bonus_note = (
+                    f" (shinjo 5th Dan: applied"
+                    f" {bonus_str}{total_str},"
+                    f" wound check passes)"
+                )
+            else:
+                sw_saved = sw_added_by_wc - new_sw
+                shinjo_bonus_note = (
+                    f" (shinjo 5th Dan: applied"
+                    f" {bonus_str}{total_str},"
+                    f" {sw_saved} serious wound"
+                    f"{'s' if sw_saved != 1 else ''}"
+                    f" prevented)"
+                )
 
     void_note = f" ({wc_void_label})" if wc_void_label else ""
     wc_base_tn = wound_tracker.light_wounds
@@ -919,11 +1069,18 @@ def _resolve_kakita_5th_dan(
 
     convert_note = ""
     if passed:
+        def_shinjo_pool = 0
+        if (shinjo_bonuses
+                and def_is_shinjo and def_dan_shinjo >= 5):
+            def_shinjo_pool = sum(
+                shinjo_bonuses[defender_name]
+            )
         should_convert = _should_convert_light_to_serious(
             wound_tracker.light_wounds,
             wound_tracker.serious_wounds,
             wound_tracker.earth_ring,
             water_ring=water_value,
+            shinjo_wc_bonus_pool=def_shinjo_pool,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -932,8 +1089,11 @@ def _resolve_kakita_5th_dan(
         else:
             convert_note = f" — keeping {wound_tracker.light_wounds} light wounds"
 
-    ab10_note = f" (TN {wc_tn} from {wc_base_tn} LW due to wave man ability)" if ab10_bonus > 0 else ""
-    wc_rolled = water_value + 1 + ab7_extra + matsu_wc_extra
+    ab10_note = (
+        f" (TN {wc_tn} from {wc_base_tn} LW due to wave man ability)"
+        if ab10_bonus > 0 else ""
+    )
+    wc_rolled = water_value + 1 + ab7_extra + matsu_wc_extra + void_spend
     wc_kept = water_value + void_spend
     wc_action = CombatAction(
         phase=0,
@@ -947,7 +1107,7 @@ def _resolve_kakita_5th_dan(
         success=passed,
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
-            f"(rolled {wc_total}){void_note}{convert_note}{ab10_note}"
+            f"(rolled {wc_total}){void_note}{shinjo_bonus_note}{convert_note}{ab10_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )
@@ -956,7 +1116,10 @@ def _resolve_kakita_5th_dan(
     if not passed:
         wound_tracker.light_wounds = 0
 
-    wc_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+    wc_action.status_after = _snapshot_status(
+        log, fighters, actions_remaining, void_points,
+        dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+    )
 
 
 def _should_predeclare_parry(
@@ -966,6 +1129,8 @@ def _should_predeclare_parry(
     is_crippled: bool,
     *,
     is_kakita: bool = False,
+    is_shinjo: bool = False,
+    shinjo_dan: int = 0,
     known_bonus: int = 0,
 ) -> bool:
     """Decide whether to pre-declare a parry for the +5 bonus.
@@ -977,12 +1142,20 @@ def _should_predeclare_parry(
     would rather attack than commit an action die to a parry before seeing the
     attack roll.
 
+    Shinjo Bushi 3rd Dan+ are *more* inclined to pre-declare because every
+    parry (even failed) triggers the 3rd Dan dice decrease, and the +5
+    free raise makes the parry more likely to succeed (blocking damage AND
+    decreasing dice).  They pre-declare whenever they have a non-trivial
+    parry chance, even if the base expected parry already exceeds the TN.
+
     Args:
         defender_parry_rank: Defender's parry skill rank.
         air_ring: Defender's Air ring value.
         attack_tn: The TN the attacker needs to hit (proxy for expected attack total).
         is_crippled: Whether the defender is crippled.
         is_kakita: Whether the defender is a Kakita Duelist.
+        is_shinjo: Whether the defender is a Shinjo Bushi.
+        shinjo_dan: Shinjo's dan level (relevant at 3+).
         known_bonus: Flat bonus that will be added to the parry roll (e.g. free raises).
 
     Returns:
@@ -996,6 +1169,21 @@ def _should_predeclare_parry(
     expected_parry = _estimate_roll(parry_dice, parry_kept) + known_bonus
     if is_crippled:
         expected_parry *= 0.9  # No exploding lowers average slightly
+
+    # Shinjo 3rd Dan+: strongly prefer pre-declaring.  The dice decrease
+    # triggers on any parry attempt, so the cost of a "wasted" pre-declare
+    # (attack misses) is just losing 1 held die — but the benefit of the
+    # +5 making the parry succeed is high (blocks damage + decreases dice).
+    # Pre-declare as long as parry rank > 0 (always have some chance).
+    if is_shinjo and shinjo_dan >= 3:
+        return True
+
+    # Shinjo below 3rd Dan: still somewhat more willing to pre-declare
+    # since they hold dice anyway (no lost attack opportunity at this phase).
+    if is_shinjo:
+        # Pre-declare whenever expected parry + 5 would reach the TN,
+        # even if expected parry alone is close.
+        return expected_parry + 5 >= attack_tn * 0.8
 
     # Pre-declare when the expected parry total is below the attack TN
     # (meaning the +5 bonus is needed to have a reasonable chance)
@@ -1075,7 +1263,11 @@ def _should_reactive_parry(
 
     # Parry if we have a reasonable chance of succeeding
     parry_dice = defender_parry_rank + air_ring
-    expected_parry = _estimate_roll(parry_dice, air_ring) * (0.9 if is_crippled else 1.0) + known_bonus
+    crippled_mult = 0.9 if is_crippled else 1.0
+    expected_parry = (
+        _estimate_roll(parry_dice, air_ring) * crippled_mult
+        + known_bonus
+    )
     if expected_parry >= attack_total * 0.6:
         return True
 
@@ -1237,6 +1429,168 @@ def _total_void(
     return void_points.get(name, 0) + temp_void.get(name, 0)
 
 
+def _select_shinjo_wc_bonuses(
+    deficit: int,
+    available: list[int],
+) -> list[int]:
+    """Select the minimum set of Shinjo 5th Dan bonuses to spend.
+
+    Applied AFTER the wound check roll is seen.  Goals (in priority order):
+      1. Minimise the number of serious wounds taken.
+      2. Use the smallest pool total that achieves that minimum.
+
+    Serious wounds on failure = 1 + (deficit // 10).
+    Reducing the deficit below 1 means passing (0 SW).
+    Each 10-point reduction that crosses a boundary saves 1 SW.
+
+    Args:
+        deficit: base_tn - wc_total (positive means failed).
+        available: List of stored bonus values.
+
+    Returns:
+        The bonuses to spend (a subset of *available*).  Empty list if
+        spending any bonus would not reduce the serious wound count.
+    """
+    if deficit <= 0 or not available:
+        return []
+
+    current_sw = 1 + (deficit - 1) // 10
+    pool = sum(available)
+
+    # Nothing in the pool can help at all
+    if pool <= 0:
+        return []
+
+    # Determine the best achievable SW count
+    if pool >= deficit:
+        best_sw = 0
+    else:
+        best_sw = 1 + (deficit - pool - 1) // 10
+
+    # If bonuses can't reduce SW at all, don't spend any
+    if best_sw >= current_sw:
+        return []
+
+    # Determine the minimum bonus total needed to reach best_sw.
+    # To achieve 0 SW: need total >= deficit.
+    # To achieve K SW (K >= 1): need total >= deficit - (10 * K - 1),
+    #   i.e. remaining deficit <= 10 * K - 1.
+    if best_sw == 0:
+        needed = deficit
+    else:
+        needed = deficit - (10 * best_sw - 1)
+
+    # Select the minimum-cost subset whose sum >= `needed`.
+    # Pool is typically small (< 10 bonuses), so enumerate all
+    # 2^N subsets and pick the one with the smallest total.
+    n = len(available)
+    best_subset: list[int] = list(available)  # fallback: use all
+    best_cost = pool
+    for mask in range(1, 1 << n):
+        subset = [available[i] for i in range(n) if mask & (1 << i)]
+        total = sum(subset)
+        if total >= needed and total < best_cost:
+            best_cost = total
+            best_subset = subset
+
+    return best_subset
+
+
+def _shinjo_attack_choice(
+    double_attack_rank: int,
+    fire_ring: int,
+    defender_parry: int,
+    void_available: int,
+    max_void_spend: int,
+    dan: int,
+    is_crippled: bool,
+    sa_bonus: int = 0,
+) -> tuple[str, int]:
+    """Decide whether Shinjo uses Double Attack or Lunge at phase 10.
+
+    Shinjo always uses DA unless crippled or DA rank 0, in which case lunge.
+    Balanced void spending: reserve at least 1 void when possible.
+
+    Args:
+        double_attack_rank: Character's Double Attack knack rank.
+        fire_ring: Character's Fire ring value.
+        defender_parry: Defender's parry skill rank.
+        void_available: Remaining void points.
+        max_void_spend: Maximum void per action.
+        dan: Character's dan level.
+        is_crippled: Whether the attacker is crippled.
+        sa_bonus: Shinjo SA bonus from held die.
+
+    Returns:
+        Tuple of ("double_attack" | "lunge", void_to_spend).
+    """
+    if is_crippled or double_attack_rank <= 0:
+        return "lunge", 0
+
+    base_tn = 5 + 5 * defender_parry
+    da_tn = base_tn + 20
+    first_dan_bonus = 1 if dan >= 1 else 0
+
+    da_rolled = double_attack_rank + fire_ring + first_dan_bonus
+    da_kept = fire_ring
+    da_expected = _estimate_roll(da_rolled, da_kept) + sa_bonus
+
+    # Balanced: reserve at least 1 void for wound checks when possible
+    usable = min(void_available - 1, max_void_spend) if void_available > 1 else 0
+
+    # Spend enough void to reach 85% of DA TN
+    if da_expected >= da_tn:
+        return "double_attack", 0
+
+    if da_expected + usable * 5.5 >= da_tn * 0.85:
+        deficit = da_tn * 0.85 - da_expected
+        void_spend = min(usable, max(1, int(deficit / 5.5 + 0.5)))
+        return "double_attack", void_spend
+
+    # DA not viable even with void: fall back to lunge
+    return "lunge", 0
+
+
+def _resolve_shinjo_phase10_attack(
+    log: CombatLog,
+    attacker_name: str,
+    defender_name: str,
+    fighters: dict[str, dict],
+    actions_remaining: dict[str, list[int]],
+    void_points: dict[str, int],
+    dan_points: dict[str, int],
+    temp_void: dict[str, int],
+    matsu_bonuses: dict[str, list[int]],
+    shinjo_bonuses: dict[str, list[int]],
+    lunge_target_bonus: dict[str, int],
+) -> None:
+    """Execute a Shinjo phase 10 attack using held dice.
+
+    Picks the LOWEST die from actions_remaining (biggest SA bonus)
+    and resolves an attack at phase 10 via _resolve_attack.
+    """
+    dice = actions_remaining[attacker_name]
+    if not dice:
+        return
+
+    # Pick lowest die for maximum SA bonus
+    die_value = min(dice)
+
+    attacker_info = fighters[attacker_name]
+    defender_info = fighters[defender_name]
+
+    _resolve_attack(
+        log, 10, attacker_info, defender_info, attacker_name, defender_name,
+        fighters, actions_remaining, void_points,
+        dan_points=dan_points,
+        temp_void=temp_void,
+        matsu_bonuses=matsu_bonuses,
+        lunge_target_bonus=lunge_target_bonus,
+        shinjo_bonuses=shinjo_bonuses,
+        shinjo_die_value=die_value,
+    )
+
+
 def simulate_combat(
     char_a: Character,
     char_b: Character,
@@ -1281,6 +1635,9 @@ def simulate_combat(
     # Matsu 3rd Dan wound check bonus pool — persists across rounds
     matsu_bonuses: dict[str, list[int]] = {char_a.name: [], char_b.name: []}
 
+    # Shinjo 5th Dan parry margin → wound check bonus pool
+    shinjo_bonuses: dict[str, list[int]] = {char_a.name: [], char_b.name: []}
+
     for round_num in range(1, max_rounds + 1):
         log.round_number = round_num
 
@@ -1301,12 +1658,23 @@ def simulate_combat(
         # Ability 6: extra unkept die on initiative
         # Matsu SA: always rolls 10 dice for initiative
         # Kakita 1st Dan: +1 unkept die on initiative
+        # Shinjo 1st Dan: +1 unkept die on initiative
         matsu_extra_a = max(0, 9 - char_a.rings.void.value) if char_a.school == "Matsu Bushi" else 0
         matsu_extra_b = max(0, 9 - char_b.rings.void.value) if char_b.school == "Matsu Bushi" else 0
         kakita_init_a = 1 if (char_a.school == "Kakita Duelist" and char_a.dan >= 1) else 0
         kakita_init_b = 1 if (char_b.school == "Kakita Duelist" and char_b.dan >= 1) else 0
-        init_a = roll_initiative(char_a, extra_unkept=char_a.ability_rank(6) + matsu_extra_a + kakita_init_a)
-        init_b = roll_initiative(char_b, extra_unkept=char_b.ability_rank(6) + matsu_extra_b + kakita_init_b)
+        shinjo_init_a = 1 if (char_a.school == "Shinjo Bushi" and char_a.dan >= 1) else 0
+        shinjo_init_b = 1 if (char_b.school == "Shinjo Bushi" and char_b.dan >= 1) else 0
+        extra_a = (
+            char_a.ability_rank(6) + matsu_extra_a
+            + kakita_init_a + shinjo_init_a
+        )
+        init_a = roll_initiative(char_a, extra_unkept=extra_a)
+        extra_b = (
+            char_b.ability_rank(6) + matsu_extra_b
+            + kakita_init_b + shinjo_init_b
+        )
+        init_b = roll_initiative(char_b, extra_unkept=extra_b)
 
         actions_remaining: dict[str, list[int]] = {
             char_a.name: sorted(init_a.dice_kept),
@@ -1326,9 +1694,29 @@ def simulate_combat(
             init_result.dice_kept = new_kept
             actions_remaining[char.name] = sorted(new_kept)
 
-        init_a.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+        # Shinjo 4th Dan: highest die set to 1
+        for char, init_action in [(char_a, init_a), (char_b, init_b)]:
+            if char.school == "Shinjo Bushi" and char.dan >= 4:
+                dice = actions_remaining[char.name]
+                if dice:
+                    max_die = max(dice)
+                    dice.remove(max_die)
+                    dice.append(1)
+                    dice.sort()
+                    init_action.description += (
+                        f" (4th Dan: highest action die"
+                        f" {max_die} -> 1)"
+                    )
+
+        init_a.status_after = _snapshot_status(
+            log, fighters, actions_remaining, void_points,
+            dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+        )
         log.add_action(init_a)
-        init_b.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+        init_b.status_after = _snapshot_status(
+            log, fighters, actions_remaining, void_points,
+            dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+        )
         log.add_action(init_b)
 
         # --- Phase 0 processing (Kakita) ---
@@ -1347,6 +1735,7 @@ def simulate_combat(
                 _resolve_kakita_5th_dan(
                     log, name, opp_name, fighters, actions_remaining,
                     void_points, dan_points, temp_void, matsu_bonuses,
+                    shinjo_bonuses,
                 )
                 if _is_mortally_wounded(log, name) or _is_mortally_wounded(log, opp_name):
                     break
@@ -1370,7 +1759,7 @@ def simulate_combat(
                     _resolve_kakita_phase0_attack(
                         log, name, opp_name, fighters, actions_remaining,
                         void_points, dan_points, temp_void, matsu_bonuses,
-                        lunge_target_bonus,
+                        lunge_target_bonus, shinjo_bonuses,
                     )
                     if _is_mortally_wounded(log, name) or _is_mortally_wounded(log, opp_name):
                         break
@@ -1410,6 +1799,21 @@ def simulate_combat(
                 temp_void=temp_void,
                 matsu_bonuses=matsu_bonuses,
                 lunge_target_bonus=lunge_target_bonus,
+                shinjo_bonuses=shinjo_bonuses,
+            )
+
+        # --- Shinjo Phase 10 Attack ---
+        for name in [char_a.name, char_b.name]:
+            char_s: Character = fighters[name]["char"]
+            if char_s.school != "Shinjo Bushi" or not actions_remaining[name]:
+                continue
+            if _is_mortally_wounded(log, char_a.name) or _is_mortally_wounded(log, char_b.name):
+                continue
+            opp_name = char_b.name if name == char_a.name else char_a.name
+            _resolve_shinjo_phase10_attack(
+                log, name, opp_name, fighters, actions_remaining,
+                void_points, dan_points, temp_void, matsu_bonuses,
+                shinjo_bonuses, lunge_target_bonus,
             )
 
         # Check for combat end
@@ -1431,6 +1835,7 @@ def _snapshot_status(
     dan_points: dict[str, int] | None = None,
     temp_void: dict[str, int] | None = None,
     matsu_bonuses: dict[str, list[int]] | None = None,
+    shinjo_bonuses: dict[str, list[int]] | None = None,
 ) -> dict[str, FighterStatus]:
     """Build a snapshot of each fighter's current state."""
     result: dict[str, FighterStatus] = {}
@@ -1448,6 +1853,7 @@ def _snapshot_status(
             temp_void_points=temp_void.get(name, 0) if temp_void else 0,
             dan_points=dan_points.get(name, 0) if dan_points else 0,
             matsu_bonuses=list(matsu_bonuses.get(name, [])) if matsu_bonuses else [],
+            shinjo_bonuses=list(shinjo_bonuses.get(name, [])) if shinjo_bonuses else [],
         )
     return result
 
@@ -1603,6 +2009,8 @@ def _resolve_attack(
     temp_void: dict[str, int] | None = None,
     matsu_bonuses: dict[str, list[int]] | None = None,
     lunge_target_bonus: dict[str, int] | None = None,
+    shinjo_bonuses: dict[str, list[int]] | None = None,
+    shinjo_die_value: int | None = None,
 ) -> None:
     """Resolve a single attack action in a phase."""
     if dan_points is None:
@@ -1613,13 +2021,34 @@ def _resolve_attack(
         matsu_bonuses = {attacker_name: [], defender_name: []}
     if lunge_target_bonus is None:
         lunge_target_bonus = {attacker_name: 0, defender_name: 0}
+    if shinjo_bonuses is None:
+        shinjo_bonuses = {attacker_name: [], defender_name: []}
 
     attacker: Character = attacker_info["char"]
     defender: Character = defender_info["char"]
     weapon: Weapon = attacker_info["weapon"]
 
+    # Shinjo school detection (before die consumption)
+    atk_is_shinjo = attacker.school == "Shinjo Bushi"
+    def_is_shinjo = defender.school == "Shinjo Bushi"
+    atk_dan_shinjo = attacker.dan if atk_is_shinjo else 0
+    def_dan_shinjo = defender.dan if def_is_shinjo else 0
+
+    # Shinjo SA bonus from held die
+    shinjo_sa_bonus = 0
+
     # Consume the phase die — if already gone (e.g. spent on a parry), skip
-    if phase in actions_remaining[attacker_name]:
+    if shinjo_die_value is not None:
+        # Shinjo phase 10 attack: consume the specified die
+        if shinjo_die_value in actions_remaining[attacker_name]:
+            actions_remaining[attacker_name].remove(shinjo_die_value)
+            shinjo_sa_bonus = 2 * (10 - shinjo_die_value)
+        else:
+            return
+    elif atk_is_shinjo and phase < 10:
+        # Shinjo holds action dice — do NOT consume or attack at phases < 10
+        return
+    elif phase in actions_remaining[attacker_name]:
         actions_remaining[attacker_name].remove(phase)
     else:
         return
@@ -1651,7 +2080,6 @@ def _resolve_attack(
     atk_is_kakita = attacker.school == "Kakita Duelist"
     def_is_kakita = defender.school == "Kakita Duelist"
     atk_dan_kakita = attacker.dan if atk_is_kakita else 0
-    def_dan_kakita = defender.dan if def_is_kakita else 0
 
     # Calculate TN and roll attack
     tn = calculate_attack_tn(def_parry_rank)
@@ -1711,6 +2139,20 @@ def _resolve_attack(
     elif atk_is_kakita and attacker_crippled:
         # Crippled Kakita always lunges
         is_lunge = True
+    elif atk_is_shinjo and shinjo_die_value is not None:
+        # Shinjo phase 10 attack: always DA (or lunge if crippled/DA rank 0)
+        attack_choice, shinjo_void = _shinjo_attack_choice(
+            da_rank, attacker.rings.fire.value, def_parry_rank,
+            _total_void(void_points, temp_void, attacker_name),
+            attacker.rings.lowest(), atk_dan_shinjo, attacker_crippled,
+            sa_bonus=shinjo_sa_bonus,
+        )
+        if attack_choice == "double_attack":
+            is_double_attack = True
+            da_void_spend = shinjo_void
+        else:
+            is_lunge = True
+            lunge_void_spend = shinjo_void
     elif atk_is_mirumoto and da_rank > 0 and not attacker_crippled:
         is_double_attack, da_void_spend = _should_use_double_attack(
             da_rank, atk_rank, attacker.rings.fire.value,
@@ -1724,22 +2166,59 @@ def _resolve_attack(
     # --- Parry pre-declaration (feature 4) ---
     # Only regular parries (defender has action in this phase) can be pre-declared.
     # Interrupts are reactive — decided AFTER seeing the attack roll.
-    has_action_in_phase = phase in actions_remaining[defender_name]
+    # Shinjo: any held die with value ≤ current phase counts as reactive
+    if def_is_shinjo:
+        has_action_in_phase = any(d <= phase for d in actions_remaining[defender_name])
+    else:
+        has_action_in_phase = phase in actions_remaining[defender_name]
 
-    # Compute known parry bonus for decision-making (e.g. Mirumoto 2nd Dan free raise)
-    def_parry_known_bonus = 5 if (def_is_mirumoto and def_dan >= 2) else 0
+    # Compute known parry bonus for decision-making
+    # (e.g. Mirumoto 2nd Dan free raise, Shinjo 2nd Dan)
+    def_parry_known_bonus = 0
+    if def_is_mirumoto and def_dan >= 2:
+        def_parry_known_bonus += 5
+    if def_is_shinjo and def_dan_shinjo >= 2:
+        def_parry_known_bonus += 5
 
     predeclared = False
     if has_action_in_phase and def_parry_rank > 0:
-        defender_crippled = log.wounds[defender_name].is_crippled
-        predeclared = _should_predeclare_parry(
-            def_parry_rank, defender.rings.air.value, tn, defender_crippled,
-            is_kakita=def_is_kakita, known_bonus=def_parry_known_bonus,
-        )
+        # Shinjo: don't pre-declare with only 1 die (save for phase 10
+        # attack), unless near mortal wound.
+        shinjo_skip_predeclare = False
+        if def_is_shinjo and len(actions_remaining[defender_name]) <= 1:
+            near_mortal = (
+                log.wounds[defender_name].serious_wounds
+                >= 2 * log.wounds[defender_name].earth_ring - 1
+            )
+            if not near_mortal:
+                shinjo_skip_predeclare = True
+
+        if not shinjo_skip_predeclare:
+            defender_crippled = log.wounds[defender_name].is_crippled
+            predeclared = _should_predeclare_parry(
+                def_parry_rank, defender.rings.air.value, tn,
+                defender_crippled,
+                is_kakita=def_is_kakita,
+                is_shinjo=def_is_shinjo,
+                shinjo_dan=def_dan_shinjo,
+                known_bonus=def_parry_known_bonus,
+            )
 
     # If pre-declared, consume the parry die now (before attack roll)
+    shinjo_parry_predeclare_die = 0
     if predeclared:
-        actions_remaining[defender_name].remove(phase)
+        if def_is_shinjo:
+            # Shinjo: spend highest eligible die ≤ phase (same logic as
+            # reactive parry — smallest held bonus sacrificed)
+            eligible = [
+                d for d in actions_remaining[defender_name]
+                if d <= phase
+            ]
+            die_to_spend = max(eligible)
+            actions_remaining[defender_name].remove(die_to_spend)
+            shinjo_parry_predeclare_die = die_to_spend
+        else:
+            actions_remaining[defender_name].remove(phase)
 
     # --- Roll attack ---
     # First Dan: +1 rolled die on attack (Mirumoto)
@@ -1755,8 +2234,11 @@ def _resolve_attack(
         # Void spending on lunge
         lng_void_label = ""
         actual_lunge_void = 0
-        if lunge_void_spend > 0 and _total_void(void_points, temp_void, attacker_name) >= lunge_void_spend:
-            lng_from_temp, lng_from_reg = _spend_void(void_points, temp_void, attacker_name, lunge_void_spend)
+        avail_void = _total_void(void_points, temp_void, attacker_name)
+        if lunge_void_spend > 0 and avail_void >= lunge_void_spend:
+            lng_from_temp, lng_from_reg = _spend_void(
+                void_points, temp_void, attacker_name, lunge_void_spend,
+            )
             lng_void_label = _void_spent_label(lng_from_temp, lng_from_reg)
             lng_rolled += lunge_void_spend
             lng_kept += lunge_void_spend
@@ -1768,6 +2250,14 @@ def _resolve_attack(
                     matsu_bonuses[attacker_name].append(bonus_value)
 
         all_dice, kept_dice, total = roll_and_keep(lng_rolled, lng_kept, explode=attack_explode)
+
+        # Shinjo SA bonus on lunge
+        shinjo_sa_note = ""
+        if atk_is_shinjo and shinjo_sa_bonus > 0:
+            total += shinjo_sa_bonus
+            held_phases = 10 - (shinjo_die_value if shinjo_die_value is not None else phase)
+            shinjo_sa_note = f" (shinjo SA: +{shinjo_sa_bonus} held {held_phases} phases)"
+
         success = total >= tn
         void_note = f" ({lng_void_label})" if lng_void_label else ""
         attack_action = CombatAction(
@@ -1780,7 +2270,11 @@ def _resolve_attack(
             total=total,
             tn=tn,
             success=success,
-            description=f"{attacker_name} lunges: {_format_pool_with_overflow(lng_rolled, lng_kept)} vs TN {tn}{void_note}",
+            description=(
+                f"{attacker_name} lunges: "
+                f"{_format_pool_with_overflow(lng_rolled, lng_kept)}"
+                f" vs TN {tn}{void_note}{shinjo_sa_note}"
+            ),
             dice_pool=_format_pool_with_overflow(lng_rolled, lng_kept),
         )
         # Lunge: opponent's next attack gets -5 TN
@@ -1789,16 +2283,24 @@ def _resolve_attack(
     elif is_double_attack:
         # Double attack uses Double Attack skill + Fire (not Attack skill)
         da_rolled = da_rank + attacker.rings.fire.value
-        # First Dan bonus: Mirumoto or Matsu
-        if (atk_is_mirumoto and atk_dan >= 1) or (atk_is_matsu and atk_dan_matsu >= 1) or (atk_is_kakita and atk_dan_kakita >= 1):
+        # First Dan bonus: Mirumoto, Matsu, Kakita, or Shinjo
+        if (
+            (atk_is_mirumoto and atk_dan >= 1)
+            or (atk_is_matsu and atk_dan_matsu >= 1)
+            or (atk_is_kakita and atk_dan_kakita >= 1)
+            or (atk_is_shinjo and atk_dan_shinjo >= 1)
+        ):
             da_rolled += 1
         da_kept = attacker.rings.fire.value
 
         # Apply void spending on double attack
         da_void_label = ""
         actual_da_void = 0
-        if da_void_spend > 0 and _total_void(void_points, temp_void, attacker_name) >= da_void_spend:
-            da_from_temp, da_from_reg = _spend_void(void_points, temp_void, attacker_name, da_void_spend)
+        da_avail = _total_void(void_points, temp_void, attacker_name)
+        if da_void_spend > 0 and da_avail >= da_void_spend:
+            da_from_temp, da_from_reg = _spend_void(
+                void_points, temp_void, attacker_name, da_void_spend,
+            )
             da_void_label = _void_spent_label(da_from_temp, da_from_reg)
             da_rolled += da_void_spend
             da_kept += da_void_spend
@@ -1816,6 +2318,13 @@ def _resolve_attack(
             fifth_dan_combat_bonus = 10 * da_void_spend
             total += fifth_dan_combat_bonus
 
+        # Shinjo SA bonus on double attack
+        shinjo_sa_note = ""
+        if atk_is_shinjo and shinjo_sa_bonus > 0:
+            total += shinjo_sa_bonus
+            held_phases = 10 - (shinjo_die_value if shinjo_die_value is not None else phase)
+            shinjo_sa_note = f" (shinjo SA: +{shinjo_sa_bonus} held {held_phases} phases)"
+
         success = total >= tn
 
         # Matsu 4th Dan: near-miss double attack still hits
@@ -1824,8 +2333,14 @@ def _resolve_attack(
             is_near_miss_da = True
 
         void_note = f" ({da_void_label})" if da_void_label else ""
-        fifth_note = f" (mirumoto: +{fifth_dan_combat_bonus} 5th Dan)" if fifth_dan_combat_bonus > 0 else ""
-        near_miss_note = " (matsu 4th Dan: near-miss hit, base damage only)" if is_near_miss_da else ""
+        fifth_note = (
+            f" (mirumoto: +{fifth_dan_combat_bonus} 5th Dan)"
+            if fifth_dan_combat_bonus > 0 else ""
+        )
+        near_miss_note = (
+            " (matsu 4th Dan: near-miss hit, base damage only)"
+            if is_near_miss_da else ""
+        )
         attack_action = CombatAction(
             phase=phase,
             actor=attacker_name,
@@ -1836,7 +2351,12 @@ def _resolve_attack(
             total=total,
             tn=tn,
             success=success,
-            description=f"{attacker_name} double attacks: {_format_pool_with_overflow(da_rolled, da_kept)} vs TN {tn}{void_note}{fifth_note}{near_miss_note}",
+            description=(
+                f"{attacker_name} double attacks: "
+                f"{_format_pool_with_overflow(da_rolled, da_kept)}"
+                f" vs TN {tn}{void_note}{fifth_note}"
+                f"{near_miss_note}{shinjo_sa_note}"
+            ),
             dice_pool=_format_pool_with_overflow(da_rolled, da_kept),
         )
     else:
@@ -1853,8 +2373,14 @@ def _resolve_attack(
                 attacker.rings.lowest(),
                 fifth_dan_bonus=fifth_dan_bonus,
             )
-            if atk_void_spend > 0 and _total_void(void_points, temp_void, attacker_name) >= atk_void_spend:
-                atk_from_temp, atk_from_reg = _spend_void(void_points, temp_void, attacker_name, atk_void_spend)
+            atk_avail = _total_void(
+                void_points, temp_void, attacker_name,
+            )
+            if atk_void_spend > 0 and atk_avail >= atk_void_spend:
+                atk_from_temp, atk_from_reg = _spend_void(
+                    void_points, temp_void,
+                    attacker_name, atk_void_spend,
+                )
                 atk_void_label = _void_spent_label(atk_from_temp, atk_from_reg)
 
         if atk_void_spend > 0:
@@ -1871,7 +2397,10 @@ def _resolve_attack(
 
             success = total >= tn
             void_note = f" ({atk_void_label})"
-            fifth_note = f" (mirumoto: +{fifth_dan_combat_bonus} 5th Dan)" if fifth_dan_combat_bonus > 0 else ""
+            fifth_note = (
+                f" (mirumoto: +{fifth_dan_combat_bonus} 5th Dan)"
+                if fifth_dan_combat_bonus > 0 else ""
+            )
             attack_action = CombatAction(
                 phase=phase,
                 actor=attacker_name,
@@ -1882,11 +2411,18 @@ def _resolve_attack(
                 total=total,
                 tn=tn,
                 success=success,
-                description=f"{attacker_name} attacks: {_format_pool_with_overflow(atk_rolled, atk_kept)} vs TN {tn}{void_note}{fifth_note}",
+                description=(
+                    f"{attacker_name} attacks: "
+                    f"{_format_pool_with_overflow(atk_rolled, atk_kept)}"
+                    f" vs TN {tn}{void_note}{fifth_note}"
+                ),
                 dice_pool=_format_pool_with_overflow(atk_rolled, atk_kept),
             )
         else:
-            attack_action = roll_attack(attacker, effective_atk_rank, RingName.FIRE, tn, explode=attack_explode)
+            attack_action = roll_attack(
+                attacker, effective_atk_rank,
+                RingName.FIRE, tn, explode=attack_explode,
+            )
             attack_action.phase = phase
             attack_action.target = defender_name
 
@@ -1906,7 +2442,10 @@ def _resolve_attack(
     if attacker_crippled and not attack_action.success:
         has_tens = any(d == 10 for d in attack_action.dice_rolled)
         max_void_spend = attacker.rings.lowest()
-        if has_tens and _total_void(void_points, temp_void, attacker_name) > 0 and max_void_spend > 0:
+        atk_void_avail = _total_void(
+            void_points, temp_void, attacker_name,
+        )
+        if has_tens and atk_void_avail > 0 and max_void_spend > 0:
             new_all, new_kept, new_total = reroll_tens(
                 attack_action.dice_rolled, len(attack_action.dice_kept),
             )
@@ -1942,7 +2481,10 @@ def _resolve_attack(
             attack_action.total += dan_bonus_pts * 2
             attack_action.success = attack_action.total >= tn
             dan_points[attacker_name] -= dan_bonus_pts
-            attack_action.description += f" (3rd dan: +{dan_bonus_pts * 2} bonus, {dan_bonus_pts} pts)"
+            attack_action.description += (
+                f" (3rd dan: +{dan_bonus_pts * 2} bonus,"
+                f" {dan_bonus_pts} pts)"
+            )
 
     # Kakita 3rd Dan: phase gap attack bonus (applies to all attack types)
     if atk_is_kakita and atk_dan_kakita >= 3:
@@ -1954,9 +2496,16 @@ def _resolve_attack(
         if kakita_bonus > 0:
             attack_action.total += kakita_bonus
             attack_action.success = attack_action.total >= tn
-            attack_action.description += f" (kakita 3rd Dan: +{kakita_bonus}, {gap} {'phase' if gap == 1 else 'phases'})"
+            phase_word = 'phase' if gap == 1 else 'phases'
+            attack_action.description += (
+                f" (kakita 3rd Dan: +{kakita_bonus},"
+                f" {gap} {phase_word})"
+            )
 
-    attack_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+    attack_action.status_after = _snapshot_status(
+        log, fighters, actions_remaining, void_points,
+        dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+    )
     log.add_action(attack_action)
 
     # Attack missed — dice already consumed by pre-declaration (if any),
@@ -1974,7 +2523,10 @@ def _resolve_attack(
     if ab3_rank > 0 and (weapon.rolled < 4 or (weapon.rolled >= 4 and weapon.kept < 2)):
         preview_weapon_rolled = min(weapon.rolled + ab3_rank, 4)
     lunge_preview_bonus = 1 if is_lunge else 0
-    raw_rolled = preview_weapon_rolled + attacker.rings.fire.value + no_parry_extra + lunge_preview_bonus
+    raw_rolled = (
+        preview_weapon_rolled + attacker.rings.fire.value
+        + no_parry_extra + lunge_preview_bonus
+    )
     pool_display = _format_pool_with_overflow(raw_rolled, weapon.kept)
     da_wound_note = " plus 1 automatic serious wound" if is_double_attack else ""
     attack_action.description += f" — damage will be {pool_display}{da_wound_note}"
@@ -1994,7 +2546,20 @@ def _resolve_attack(
     is_interrupt = False
     attacker_weapon: Weapon = attacker_info["weapon"]
 
-    if has_action_in_phase and def_parry_rank > 0:
+    if predeclared:
+        # Pre-declared: die already consumed, always parry
+        can_parry = True
+    elif def_is_shinjo and has_action_in_phase and def_parry_rank > 0:
+        # Shinjo reactive parry: only parry if 2+ dice remain (keep ≥1 for phase 10 attack)
+        # Unless near mortal wound, then always parry
+        wound_info = log.wounds[defender_name]
+        near_mortal = (
+            wound_info.serious_wounds >= 2 * wound_info.earth_ring - 1
+        )
+        if len(actions_remaining[defender_name]) > 1 or near_mortal:
+            can_parry = True
+        # Shinjo never interrupts
+    elif has_action_in_phase and def_parry_rank > 0:
         if parry_auto_succeeds:
             # Ability 1: guaranteed success — always worth spending 1 die
             can_parry = True
@@ -2023,7 +2588,7 @@ def _resolve_attack(
             is_phase_shift = True
             phase_shift_die = shift_die
             phase_shift_cost = shift_cost
-    if not can_parry and (
+    if not can_parry and not def_is_shinjo and (
         not has_action_in_phase
         and len(actions_remaining[defender_name]) >= 2
         and def_parry_rank > 0
@@ -2051,11 +2616,22 @@ def _resolve_attack(
                 can_parry = True
                 is_interrupt = True
 
+    shinjo_parry_die_value = 0  # Track which die Shinjo spent on parry (for SA bonus)
     if can_parry and def_parry_rank > 0:
         parry_attempted = True
 
+        # For Shinjo predeclared parries, die was already consumed above
+        if def_is_shinjo and predeclared:
+            shinjo_parry_die_value = shinjo_parry_predeclare_die
+
         # Consume dice for the parry
-        if is_phase_shift:
+        if def_is_shinjo and not is_interrupt and not predeclared:
+            # Shinjo: spend highest eligible die (value ≤ phase) — smallest held bonus
+            eligible = [d for d in actions_remaining[defender_name] if d <= phase]
+            die_to_spend = max(eligible)
+            actions_remaining[defender_name].remove(die_to_spend)
+            shinjo_parry_die_value = die_to_spend
+        elif is_phase_shift:
             # Phase shift: consume the shifted die and spend dan points
             actions_remaining[defender_name].remove(phase_shift_die)
             dan_points[defender_name] -= phase_shift_cost
@@ -2083,13 +2659,19 @@ def _resolve_attack(
                 total=0,
                 tn=attack_action.total,
                 success=True,
-                description=f"{defender_name} parries: auto-success (wave man free raise){interrupt_note}",
+                description=(
+                    f"{defender_name} parries: auto-success"
+                    f" (wave man free raise){interrupt_note}"
+                ),
                 dice_pool="",
             )
             if def_is_mirumoto:
                 temp_void[defender_name] = temp_void.get(defender_name, 0) + 1
                 parry_action.description += " (mirumoto SA: +1 temp void)"
-            parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+            parry_action.status_after = _snapshot_status(
+                log, fighters, actions_remaining, void_points,
+                dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+            )
             log.add_action(parry_action)
             return
 
@@ -2099,6 +2681,9 @@ def _resolve_attack(
 
         # First Dan Mirumoto defender: +1 rolled die on parry
         if def_is_mirumoto and def_dan >= 1:
+            parry_rolled += 1
+        # First Dan Shinjo defender: +1 rolled die on parry
+        if def_is_shinjo and def_dan_shinjo >= 1:
             parry_rolled += 1
 
         # Feature 1: Crippled disables exploding 10s on parry rolls
@@ -2116,6 +2701,11 @@ def _resolve_attack(
             parry_bonus += 5
             parry_bonus_note += " (mirumoto: free raise +5)"
 
+        # Second Dan Shinjo defender: free raise (+5) on parry
+        if def_is_shinjo and def_dan_shinjo >= 2:
+            parry_bonus += 5
+            parry_bonus_note += " (shinjo 2nd Dan: free raise +5)"
+
         # Mirumoto defender: void spending on parry
         def_parry_void_spend = 0
         def_parry_void_label = ""
@@ -2127,8 +2717,14 @@ def _resolve_attack(
                 defender.rings.lowest(),
                 fifth_dan_bonus=fifth_dan_bonus,
             )
-            if def_parry_void_spend > 0 and _total_void(void_points, temp_void, defender_name) >= def_parry_void_spend:
-                pv_from_temp, pv_from_reg = _spend_void(void_points, temp_void, defender_name, def_parry_void_spend)
+            def_void_avail = _total_void(
+                void_points, temp_void, defender_name,
+            )
+            if def_parry_void_spend > 0 and def_void_avail >= def_parry_void_spend:
+                pv_from_temp, pv_from_reg = _spend_void(
+                    void_points, temp_void,
+                    defender_name, def_parry_void_spend,
+                )
                 def_parry_void_label = _void_spent_label(pv_from_temp, pv_from_reg)
                 parry_rolled += def_parry_void_spend
                 parry_kept += def_parry_void_spend
@@ -2155,9 +2751,16 @@ def _resolve_attack(
         if defender_crippled and (parry_total + parry_bonus) < parry_tn:
             has_tens = any(d == 10 for d in all_dice)
             max_void_spend = defender.rings.lowest()
-            if has_tens and _total_void(void_points, temp_void, defender_name) > 0 and max_void_spend > 0:
-                all_dice, kept_dice, parry_total = reroll_tens(all_dice, parry_kept)
-                pcr_from_temp, pcr_from_reg = _spend_void(void_points, temp_void, defender_name, 1)
+            def_crip_void = _total_void(
+                void_points, temp_void, defender_name,
+            )
+            if has_tens and def_crip_void > 0 and max_void_spend > 0:
+                all_dice, kept_dice, parry_total = reroll_tens(
+                    all_dice, parry_kept,
+                )
+                pcr_from_temp, pcr_from_reg = _spend_void(
+                    void_points, temp_void, defender_name, 1,
+                )
                 pcr_label = "temp void" if pcr_from_temp else "void"
                 parry_bonus_note += f" ({pcr_label}: rerolled 10s)"
                 # Matsu 3rd Dan: crippled parry reroll void spending generates bonus
@@ -2169,6 +2772,17 @@ def _resolve_attack(
 
         effective_parry_total = parry_total + parry_bonus
 
+        # Shinjo SA bonus on parry
+        if def_is_shinjo and shinjo_parry_die_value > 0:
+            shinjo_parry_sa = 2 * (phase - shinjo_parry_die_value)
+            if shinjo_parry_sa > 0:
+                effective_parry_total += shinjo_parry_sa
+                held = phase - shinjo_parry_die_value
+                parry_bonus_note += (
+                    f" (shinjo SA: +{shinjo_parry_sa},"
+                    f" held {held} phases)"
+                )
+
         # 3rd Dan Mirumoto: post-roll +2 per point on parry
         if def_is_mirumoto and def_dan >= 3 and effective_parry_total < parry_tn:
             dan_parry_pts = _compute_dan_roll_bonus(
@@ -2178,15 +2792,26 @@ def _resolve_attack(
             if dan_parry_pts > 0:
                 effective_parry_total += dan_parry_pts * 2
                 dan_points[defender_name] -= dan_parry_pts
-                parry_bonus_note += f" (3rd dan: +{dan_parry_pts * 2} bonus, {dan_parry_pts} pts)"
+                parry_bonus_note += (
+                    f" (3rd dan: +{dan_parry_pts * 2} bonus,"
+                    f" {dan_parry_pts} pts)"
+                )
 
         parry_succeeded = effective_parry_total >= parry_tn
 
         action_type = ActionType.INTERRUPT if is_interrupt else ActionType.PARRY
         interrupt_note = " (interrupt)" if is_interrupt else ""
-        phase_shift_note = f" (3rd dan: shifted from phase {phase_shift_die}, {phase_shift_cost} pts)" if is_phase_shift else ""
+        phase_shift_note = (
+            f" (3rd dan: shifted from phase"
+            f" {phase_shift_die}, {phase_shift_cost} pts)"
+            if is_phase_shift else ""
+        )
         ab2_note = f" (wave man: parry TN +{ab2_bonus})" if ab2_bonus > 0 else ""
-        parry_pool = f"{parry_rolled}k{parry_kept} + 5" if predeclared else f"{parry_rolled}k{parry_kept}"
+        parry_pool = (
+            f"{parry_rolled}k{parry_kept} + 5"
+            if predeclared
+            else f"{parry_rolled}k{parry_kept}"
+        )
         parry_action = CombatAction(
             phase=phase,
             actor=defender_name,
@@ -2207,7 +2832,28 @@ def _resolve_attack(
         if def_is_mirumoto:
             temp_void[defender_name] = temp_void.get(defender_name, 0) + 1
             parry_action.description += " (mirumoto SA: +1 temp void)"
-        parry_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+
+        # Shinjo 3rd Dan: decrease remaining dice by attack skill after parry (success or fail)
+        if def_is_shinjo and def_dan_shinjo >= 3 and parry_attempted:
+            atk_skill_def = defender.get_skill("Attack")
+            decrease = atk_skill_def.rank if atk_skill_def else 0
+            if decrease > 0 and actions_remaining[defender_name]:
+                actions_remaining[defender_name] = sorted(
+                    d - decrease for d in actions_remaining[defender_name]
+                )
+                parry_action.description += f" (shinjo 3rd Dan: dice decreased by {decrease})"
+
+        # Shinjo 5th Dan: store parry margin as wound check bonus
+        if def_is_shinjo and def_dan_shinjo >= 5 and parry_succeeded:
+            margin = effective_parry_total - parry_tn
+            if margin > 0:
+                shinjo_bonuses[defender_name].append(margin)
+                parry_action.description += f" (shinjo 5th Dan: +{margin} wound check bonus stored)"
+
+        parry_action.status_after = _snapshot_status(
+            log, fighters, actions_remaining, void_points,
+            dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+        )
         log.add_action(parry_action)
 
         if parry_succeeded:
@@ -2222,15 +2868,28 @@ def _resolve_attack(
                 parry_reduction = def_parry_rank // 2
             if all_extra > 0:
                 reduced_extra = max(0, all_extra - parry_reduction)
-                full_rolled = preview_weapon_rolled + attacker.rings.fire.value + all_extra + lunge_preview_bonus
-                reduced_rolled = preview_weapon_rolled + attacker.rings.fire.value + reduced_extra + lunge_preview_bonus
+                full_rolled = (
+                    preview_weapon_rolled + attacker.rings.fire.value
+                    + all_extra + lunge_preview_bonus
+                )
+                reduced_rolled = (
+                    preview_weapon_rolled + attacker.rings.fire.value
+                    + reduced_extra + lunge_preview_bonus
+                )
                 # DA failed parry: serious wound converts to +2 rolled dice
                 da_conversion_dice = 2 if is_double_attack and not is_near_miss_da else 0
                 reduced_rolled += da_conversion_dice
                 full_raw = f"{full_rolled}k{weapon.kept}"
                 reduced_display = _format_pool_with_overflow(reduced_rolled, weapon.kept)
-                da_prevent_note = "automatic serious wound is converted to +2 rolled dice, and " if is_double_attack else ""
-                parry_action.description += f" — {da_prevent_note}{full_raw} is reduced to {reduced_display}"
+                da_prevent_note = (
+                    "automatic serious wound is converted"
+                    " to +2 rolled dice, and "
+                    if is_double_attack else ""
+                )
+                parry_action.description += (
+                    f" — {da_prevent_note}{full_raw}"
+                    f" is reduced to {reduced_display}"
+                )
 
     # --- Roll damage ---
     # For double attack, extra dice use base_tn (before +20)
@@ -2281,11 +2940,17 @@ def _resolve_attack(
     # Lunge: +1 rolled damage die
     lunge_damage_bonus = 1 if is_lunge else 0
 
-    damage_action = roll_damage(attacker, boosted_rolled, weapon.kept, extra_dice + da_extra_rolled + lunge_damage_bonus)
+    extra_dmg = extra_dice + da_extra_rolled + lunge_damage_bonus
+    damage_action = roll_damage(
+        attacker, boosted_rolled, weapon.kept, extra_dmg,
+    )
     damage_action.phase = phase
     damage_action.target = defender_name
     # Show overflow conversion in damage dice pool
-    dmg_rolled = boosted_rolled + attacker.rings.fire.value + extra_dice + da_extra_rolled + lunge_damage_bonus
+    dmg_rolled = (
+        boosted_rolled + attacker.rings.fire.value
+        + extra_dice + da_extra_rolled + lunge_damage_bonus
+    )
     damage_action.dice_pool = _format_pool_with_overflow(dmg_rolled, weapon.kept)
 
     # Ability 4: Damage rounding
@@ -2317,7 +2982,10 @@ def _resolve_attack(
         damage_action.description += f" (double attack: +{da_serious_wound} serious wound)"
 
     # Snapshot after damage is applied
-    damage_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+    damage_action.status_after = _snapshot_status(
+        log, fighters, actions_remaining, void_points,
+        dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+    )
 
     # --- Wound check ---
     water_value = defender.rings.water.value
@@ -2325,6 +2993,7 @@ def _resolve_attack(
     # Matsu 3rd Dan: check if stored matsu bonuses can pass the wound check before deciding void
     wc_tn_estimate = wound_tracker.light_wounds
     matsu_bonus_note = ""
+    shinjo_bonus_note = ""
     skip_void_for_matsu = False
     if def_is_matsu and def_dan_matsu >= 3 and matsu_bonuses[defender_name]:
         # Check if any stored bonus can plausibly help — if so, save void
@@ -2333,6 +3002,16 @@ def _resolve_attack(
                 skip_void_for_matsu = True
                 break
 
+    # Shinjo 5th Dan: skip void only when the bonus pool is large
+    # enough to plausibly cover the entire wound check on its own.
+    # Bonuses are applied after the roll, so void still helps the
+    # base roll — only skip when the pool makes void unnecessary.
+    skip_void_for_shinjo = False
+    if def_is_shinjo and def_dan_shinjo >= 5 and shinjo_bonuses[defender_name]:
+        shinjo_pool_total = sum(shinjo_bonuses[defender_name])
+        if shinjo_pool_total >= wc_tn_estimate:
+            skip_void_for_shinjo = True
+
     # Compute wound check bonuses before void decision so they inform the decision
     ab7_extra = 2 * defender.ability_rank(7)
     matsu_wc_extra = 1 if def_is_matsu and def_dan_matsu >= 1 else 0
@@ -2340,12 +3019,17 @@ def _resolve_attack(
 
     # Decide how many void points to spend
     max_spend = defender.rings.lowest()
-    if skip_void_for_matsu:
+    if skip_void_for_matsu or skip_void_for_shinjo:
         void_spend = 0
     else:
+        wc_void_avail = _total_void(
+            void_points, temp_void, defender_name,
+        )
         void_spend = _should_spend_void_on_wound_check(
-            water_value, wound_tracker.light_wounds, _total_void(void_points, temp_void, defender_name),
-            max_spend=max_spend, extra_rolled=ab7_extra + matsu_wc_extra, tn_bonus=ab10_bonus,
+            water_value, wound_tracker.light_wounds, wc_void_avail,
+            max_spend=max_spend,
+            extra_rolled=ab7_extra + matsu_wc_extra,
+            tn_bonus=ab10_bonus,
         )
     wc_from_temp, wc_from_reg = _spend_void(void_points, temp_void, defender_name, void_spend)
     wc_void_label = _void_spent_label(wc_from_temp, wc_from_reg)
@@ -2358,6 +3042,8 @@ def _resolve_attack(
         for _ in range(void_spend):
             matsu_bonuses[defender_name].append(bonus_value)
         matsu_bonus_note += f" (matsu 3rd Dan: +{bonus_value} wound check bonus stored)"
+
+    sw_before_wc = wound_tracker.serious_wounds
 
     passed, wc_total, wc_all_dice, wc_kept_dice = make_wound_check(
         wound_tracker, water_value, void_spend=void_spend,
@@ -2384,6 +3070,51 @@ def _resolve_attack(
                 matsu_bonus_note += f" (matsu 3rd Dan: applied +{bonus} bonus)"
                 break
 
+    # Shinjo 5th Dan: apply stored parry margin bonuses after seeing
+    # the wound check result.  Select the minimum set of bonuses that
+    # minimises the serious wound count.
+    if def_is_shinjo and def_dan_shinjo >= 5 and not passed and shinjo_bonuses[defender_name]:
+        base_tn = wound_tracker.light_wounds  # base TN (no ab10)
+        raw_deficit = base_tn - wc_total
+        used = _select_shinjo_wc_bonuses(
+            raw_deficit, shinjo_bonuses[defender_name],
+        )
+        if used:
+            bonus_applied = sum(used)
+            wc_total += bonus_applied
+            # Remove spent bonuses from the pool
+            remaining = list(shinjo_bonuses[defender_name])
+            for b in used:
+                remaining.remove(b)
+            shinjo_bonuses[defender_name][:] = remaining
+            # Recalculate serious wounds: undo what make_wound_check
+            # added and recompute with the boosted total.
+            sw_added_by_wc = wound_tracker.serious_wounds - sw_before_wc
+            new_deficit = base_tn - wc_total
+            if new_deficit <= 0:
+                new_sw = 0
+                passed = True
+            else:
+                new_sw = 1 + (new_deficit // 10)
+            wound_tracker.serious_wounds += (new_sw - sw_added_by_wc)
+            bonus_str = ", ".join(f"+{b}" for b in used)
+            total_str = f" = +{bonus_applied}" if len(used) > 1 else ""
+            if passed:
+                shinjo_bonus_note += (
+                    f" (shinjo 5th Dan: applied"
+                    f" {bonus_str}{total_str},"
+                    f" wound check passes)"
+                )
+            else:
+                sw_saved = sw_added_by_wc - new_sw
+                shinjo_bonus_note += (
+                    f" (shinjo 5th Dan: applied"
+                    f" {bonus_str}{total_str},"
+                    f" {sw_saved} serious wound"
+                    f"{'s' if sw_saved != 1 else ''}"
+                    f" prevented)"
+                )
+
     void_note = f" ({wc_void_label})" if wc_void_label else ""
 
     # Record the TN before any conversion modifies light_wounds
@@ -2393,11 +3124,17 @@ def _resolve_attack(
     # Feature 3: Wound check success choice
     convert_note = ""
     if passed:
+        shinjo_pool = (
+            sum(shinjo_bonuses[defender_name])
+            if def_is_shinjo and def_dan_shinjo >= 5
+            else 0
+        )
         should_convert = _should_convert_light_to_serious(
             wound_tracker.light_wounds,
             wound_tracker.serious_wounds,
             wound_tracker.earth_ring,
             water_ring=water_value,
+            shinjo_wc_bonus_pool=shinjo_pool,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -2406,8 +3143,16 @@ def _resolve_attack(
         else:
             convert_note = f" — keeping {wound_tracker.light_wounds} light wounds"
 
-    ab10_note = f" (TN {wc_tn} from {wc_base_tn} LW due to wave man ability)" if ab10_bonus > 0 else ""
-    wc_rolled = water_value + 1 + ab7_extra + matsu_wc_extra
+    ab10_note = (
+        f" (TN {wc_tn} from {wc_base_tn} LW due to wave man ability)"
+        if ab10_bonus > 0 else ""
+    )
+    da_auto_sw_note = (
+        f" (plus {da_serious_wound} automatic SW"
+        f" from double attack)"
+        if da_serious_wound > 0 else ""
+    )
+    wc_rolled = water_value + 1 + ab7_extra + matsu_wc_extra + void_spend
     wc_kept = water_value + void_spend
     wc_action = CombatAction(
         phase=phase,
@@ -2421,7 +3166,8 @@ def _resolve_attack(
         success=passed,
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
-            f"(rolled {wc_total}){void_note}{matsu_bonus_note}{convert_note}{ab10_note}"
+            f"(rolled {wc_total}){void_note}{matsu_bonus_note}{shinjo_bonus_note}"
+            f"{convert_note}{da_auto_sw_note}{ab10_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )
@@ -2436,4 +3182,7 @@ def _resolve_attack(
             wc_action.description += " (matsu 5th Dan: light wounds reset to 15)"
 
     # Snapshot after wound check (reflects serious wound promotion if failed)
-    wc_action.status_after = _snapshot_status(log, fighters, actions_remaining, void_points, dan_points, temp_void, matsu_bonuses)
+    wc_action.status_after = _snapshot_status(
+        log, fighters, actions_remaining, void_points,
+        dan_points, temp_void, matsu_bonuses, shinjo_bonuses,
+    )

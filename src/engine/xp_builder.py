@@ -173,8 +173,6 @@ def build_character_from_xp(
     combat_xp = int(total_xp * (1 - non_combat_pct))
     non_combat_xp = total_xp - combat_xp
 
-    # Compute combat_spent by comparing budget before and after
-    initial_budget = combat_xp
     # Recalculate remaining budget from stats
     ring_values = stats.ring_values
     base_rings: dict[str, int] = {

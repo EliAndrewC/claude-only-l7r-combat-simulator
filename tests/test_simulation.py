@@ -15,6 +15,7 @@ from src.engine.simulation import (
     _resolve_attack,
     _select_shinjo_wc_bonuses,
     _shinjo_attack_choice,
+    _shinjo_should_parry_with_two_dice,
     _should_convert_light_to_serious,
     _should_interrupt_parry,
     _should_predeclare_parry,
@@ -5467,8 +5468,8 @@ class TestShinjoFirstDan:
             "Attacker": {"char": a, "weapon": KATANA},
             "Shinjo": {"char": b, "weapon": KATANA},
         }
-        # Shinjo needs 2+ dice to parry (keep 1 for attack)
-        actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
+        # Shinjo needs 3+ dice to always parry (2 dice uses smart parry)
+        actions_remaining = {"Attacker": [5], "Shinjo": [3, 5, 7]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
         _resolve_attack(
@@ -5495,7 +5496,8 @@ class TestShinjoSecondDan:
             "Attacker": {"char": a, "weapon": KATANA},
             "Shinjo": {"char": b, "weapon": KATANA},
         }
-        actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
+        # Use 3 dice so Shinjo always parries (2 dice uses smart parry)
+        actions_remaining = {"Attacker": [5], "Shinjo": [3, 5, 7]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
         _resolve_attack(
@@ -5750,10 +5752,10 @@ class TestSelectShinjoWcBonuses:
 
 
 class TestShinjoParryDecision:
-    """Shinjo parry decision: parries with 2+ dice, holds last die for attack; never interrupts."""
+    """Shinjo parry: 3+ dice always, 2 dice smart, 1 die hold; never interrupts."""
 
-    def test_parries_when_multiple_dice(self) -> None:
-        """Shinjo parries when 2+ dice remain."""
+    def test_parries_when_three_plus_dice(self) -> None:
+        """Shinjo always parries when 3+ dice remain."""
         a = _make_character("Attacker", fire=4, earth=3, void=3)
         b = _make_shinjo("Shinjo", knack_rank=2, parry_rank=3, air=3, earth=3, void=2)
 
@@ -5762,8 +5764,8 @@ class TestShinjoParryDecision:
             "Attacker": {"char": a, "weapon": KATANA},
             "Shinjo": {"char": b, "weapon": KATANA},
         }
-        # Give Shinjo 2 dice — should parry with one and hold the other
-        actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
+        # Give Shinjo 3 dice — should always parry
+        actions_remaining = {"Attacker": [5], "Shinjo": [3, 5, 7]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
         _resolve_attack(
@@ -5780,6 +5782,39 @@ class TestShinjoParryDecision:
             ) and a.success
         ]
         # If attack hit, there should be a parry attempt
+        if attack_actions:
+            assert len(parry_actions) >= 1
+
+    def test_smart_parry_with_two_dice_dangerous(self) -> None:
+        """Shinjo with 2 dice parries when near mortal wound."""
+        a = _make_character("Attacker", fire=4, earth=3, void=3)
+        b = _make_shinjo("Shinjo", knack_rank=2, parry_rank=3, air=3, earth=3, void=2)
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        # Put Shinjo near mortal (earth=3 → mortal at 6 SW, set to 5)
+        log.wounds["Shinjo"].serious_wounds = 5
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        # Give Shinjo exactly 2 dice
+        actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
+        void_points = {"Attacker": 3, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining, void_points,
+        )
+
+        parry_actions = [a for a in log.actions if a.action_type == ActionType.PARRY]
+        attack_actions = [
+            a for a in log.actions
+            if a.action_type in (
+                ActionType.ATTACK, ActionType.DOUBLE_ATTACK,
+                ActionType.LUNGE,
+            ) and a.success
+        ]
+        # Near mortal → should always parry on hit
         if attack_actions:
             assert len(parry_actions) >= 1
 
@@ -6155,3 +6190,180 @@ class TestShinjoSmokeTest:
             if found_phase10:
                 break
         assert found_phase10, "Shinjo never attacked at phase 10"
+
+
+class TestShinjoPhase10MultipleAttacks:
+    """Shinjo makes one DA per remaining die at phase 10."""
+
+    def test_phase10_multiple_attacks(self) -> None:
+        """Shinjo with 3 dice at phase 10 makes up to 3 DAs (one per die)."""
+        a = _make_shinjo(
+            "Shinjo", knack_rank=3, attack_rank=3,
+            double_attack_rank=3, fire=3, air=3, earth=3, void=3,
+        )
+        b = _make_character("Target", fire=2, earth=4, void=2)
+        b.skills = [
+            Skill(name="Attack", rank=1, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+        ]
+
+        log = create_combat_log(["Shinjo", "Target"], [3, 4])
+        fighters = {
+            "Shinjo": {"char": a, "weapon": KATANA},
+            "Target": {"char": b, "weapon": KATANA},
+        }
+        actions_remaining: dict[str, list[int]] = {"Shinjo": [2, 5, 8], "Target": []}
+        void_points = {"Shinjo": 3, "Target": 2}
+        matsu_bonuses: dict[str, list[int]] = {"Shinjo": [], "Target": []}
+        shinjo_bonuses: dict[str, list[int]] = {"Shinjo": [], "Target": []}
+        dan_points: dict[str, int] = {"Shinjo": 0, "Target": 0}
+        temp_void: dict[str, int] = {"Shinjo": 0, "Target": 0}
+        lunge_target_bonus: dict[str, int] = {"Shinjo": 0, "Target": 0}
+
+        from src.engine.simulation import _is_mortally_wounded, _resolve_shinjo_phase10_attack
+
+        attacks_made = 0
+        while actions_remaining["Shinjo"]:
+            if _is_mortally_wounded(log, "Target"):
+                break
+            dice_before = len(actions_remaining["Shinjo"])
+            _resolve_shinjo_phase10_attack(
+                log, "Shinjo", "Target", fighters, actions_remaining,
+                void_points, dan_points, temp_void, matsu_bonuses,
+                shinjo_bonuses, lunge_target_bonus,
+            )
+            attacks_made += 1
+            if len(actions_remaining["Shinjo"]) >= dice_before:
+                break
+
+        # Should have attempted multiple attacks (at least 2, up to 3)
+        assert attacks_made >= 2
+
+    def test_phase10_multi_attack_in_full_sim(self) -> None:
+        """In a full simulation, Shinjo makes multiple attacks at phase 10."""
+        found_multi = False
+        for _ in range(20):
+            a = _make_shinjo("Shinjo", knack_rank=3, fire=3, air=3, earth=3, void=3)
+            b = _make_character("Target", fire=2, earth=4, void=3)
+            b.skills = [
+                Skill(name="Attack", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+            ]
+            log = simulate_combat(a, b, KATANA, KATANA, max_rounds=3)
+            # Count total phase 10 attacks by Shinjo
+            p10_attacks = [
+                act for act in log.actions
+                if act.actor == "Shinjo"
+                and act.phase == 10
+                and act.action_type in (ActionType.DOUBLE_ATTACK, ActionType.LUNGE)
+            ]
+            if len(p10_attacks) >= 2:
+                found_multi = True
+                break
+        assert found_multi, "Shinjo never made multiple attacks at phase 10"
+
+
+class TestShinjoSmartParryTwoDice:
+    """Unit tests for _shinjo_should_parry_with_two_dice helper."""
+
+    def test_parries_when_near_mortal(self) -> None:
+        """Within 1 SW of mortal wound → always parry."""
+        # earth=3 → mortal at 6 SW, currently at 5 → 1 away
+        result = _shinjo_should_parry_with_two_dice(
+            attack_total=25,
+            attack_tn=20,
+            weapon_rolled=3,
+            weapon_kept=2,
+            attacker_fire=3,
+            defender_serious_wounds=5,
+            defender_earth_ring=3,
+            defender_light_wounds=0,
+        )
+        assert result is True
+
+    def test_parries_when_dangerous_hit(self) -> None:
+        """High damage expected (would cause 2+ serious wounds) → parry."""
+        # Big raises + heavy weapon, with existing light wounds
+        # extra_dice = (45-20)//5 = 5, rolled = 5+4+5 = 14, est ~45 LW
+        # existing 15 LW + 45 = 60 → 60//20 = 3 new SW (earth=2, threshold=20)
+        result = _shinjo_should_parry_with_two_dice(
+            attack_total=45,
+            attack_tn=20,
+            weapon_rolled=5,
+            weapon_kept=3,
+            attacker_fire=4,
+            defender_serious_wounds=1,
+            defender_earth_ring=2,
+            defender_light_wounds=15,
+        )
+        assert result is True
+
+    def test_saves_die_for_low_damage(self) -> None:
+        """Modest damage, far from mortal → save die for second DA."""
+        # Barely hit (no raises), light weapon, far from mortal
+        result = _shinjo_should_parry_with_two_dice(
+            attack_total=20,
+            attack_tn=20,
+            weapon_rolled=3,
+            weapon_kept=2,
+            attacker_fire=2,
+            defender_serious_wounds=0,
+            defender_earth_ring=3,
+            defender_light_wounds=0,
+        )
+        assert result is False
+
+    def test_saves_die_when_healthy(self) -> None:
+        """Healthy defender with moderate hit → save die for DA."""
+        result = _shinjo_should_parry_with_two_dice(
+            attack_total=25,
+            attack_tn=20,
+            weapon_rolled=3,
+            weapon_kept=2,
+            attacker_fire=3,
+            defender_serious_wounds=0,
+            defender_earth_ring=4,
+            defender_light_wounds=0,
+        )
+        assert result is False
+
+
+class TestShinjoSkipPredeclareWithTwoDice:
+    """Shinjo doesn't predeclare with exactly 2 dice (save for reactive)."""
+
+    def test_skip_predeclare_with_two_dice(self) -> None:
+        """Shinjo with 2 dice should NOT predeclare parry (prefers reactive)."""
+        a = _make_character("Attacker", fire=3, earth=3, void=2)
+        b = _make_shinjo(
+            "Shinjo", knack_rank=3, parry_rank=3,
+            air=3, earth=3, void=2,
+        )
+
+        log = create_combat_log(["Attacker", "Shinjo"], [3, 3])
+        fighters = {
+            "Attacker": {"char": a, "weapon": KATANA},
+            "Shinjo": {"char": b, "weapon": KATANA},
+        }
+        # Give Shinjo exactly 2 dice
+        actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
+        void_points = {"Attacker": 2, "Shinjo": 2}
+
+        _resolve_attack(
+            log, 5, fighters["Attacker"], fighters["Shinjo"],
+            "Attacker", "Shinjo", fighters, actions_remaining,
+            void_points,
+        )
+
+        # With 2 dice, no predeclare should happen.
+        # Check: if there was a parry, it should be reactive (after attack hit),
+        # not predeclared. Predeclare consumes die before the attack roll.
+        # A reactive parry only happens if the attack hits.
+        attack_actions = [
+            act for act in log.actions
+            if act.action_type in (ActionType.ATTACK, ActionType.DOUBLE_ATTACK, ActionType.LUNGE)
+        ]
+        parry_actions = [act for act in log.actions if act.action_type == ActionType.PARRY]
+
+        # If the attack missed, no parry should have been attempted
+        # (predeclare would have still consumed a die even on a miss)
+        if attack_actions and not attack_actions[0].success:
+            assert len(parry_actions) == 0

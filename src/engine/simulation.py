@@ -1274,6 +1274,71 @@ def _should_reactive_parry(
     return False
 
 
+def _shinjo_should_parry_with_two_dice(
+    attack_total: int,
+    attack_tn: int,
+    weapon_rolled: int,
+    weapon_kept: int,
+    attacker_fire: int,
+    defender_serious_wounds: int,
+    defender_earth_ring: int,
+    defender_light_wounds: int,
+) -> bool:
+    """Decide whether a Shinjo with exactly 2 dice should parry or save for a second DA.
+
+    Called when the Shinjo has exactly 2 action dice remaining. Parrying costs
+    one die, leaving only one for a phase-10 DA. Skipping the parry preserves
+    both dice for two DAs at phase 10.
+
+    Logic:
+    1. If within 1 serious wound of mortal → always parry (survival).
+    2. Estimate expected damage from the hit.
+    3. If projected light wounds would likely cause 2+ serious wounds → parry.
+    4. Otherwise → save the die for a second DA.
+
+    Args:
+        attack_total: The attack roll total that hit.
+        attack_tn: The TN the attacker needed to hit.
+        weapon_rolled: Attacker's weapon rolled dice (base).
+        weapon_kept: Attacker's weapon kept dice.
+        attacker_fire: Attacker's Fire ring value.
+        defender_serious_wounds: Defender's current serious wounds.
+        defender_earth_ring: Defender's Earth ring value.
+        defender_light_wounds: Defender's current light wounds.
+
+    Returns:
+        True if the Shinjo should parry, False if they should save for DA.
+    """
+    mortal_threshold = 2 * defender_earth_ring
+    wounds_to_mortal = mortal_threshold - defender_serious_wounds
+
+    # Within 1 SW of mortal → always parry
+    if wounds_to_mortal <= 1:
+        return True
+
+    # Estimate damage from raises
+    extra_dice = max(0, (attack_total - attack_tn) // 5)
+    total_rolled = weapon_rolled + attacker_fire + extra_dice
+    expected_damage = _estimate_roll(total_rolled, weapon_kept)
+
+    # Project new light wounds after this hit
+    projected_lw = defender_light_wounds + expected_damage
+
+    # Each serious wound converts at earth*10 light wounds
+    sw_threshold = defender_earth_ring * 10
+    projected_new_sw = int(projected_lw // sw_threshold) if sw_threshold > 0 else 0
+
+    # If projected to cause 2+ new serious wounds → dangerous, parry
+    if projected_new_sw >= 2:
+        return True
+
+    # If even 1 new SW would put us within 1 of mortal → parry
+    if projected_new_sw >= 1 and wounds_to_mortal <= 2:
+        return True
+
+    return False
+
+
 def _should_interrupt_parry(
     defender_parry_rank: int,
     air_ring: int,
@@ -1802,19 +1867,23 @@ def simulate_combat(
                 shinjo_bonuses=shinjo_bonuses,
             )
 
-        # --- Shinjo Phase 10 Attack ---
+        # --- Shinjo Phase 10 Attack (one DA per remaining die) ---
         for name in [char_a.name, char_b.name]:
             char_s: Character = fighters[name]["char"]
             if char_s.school != "Shinjo Bushi" or not actions_remaining[name]:
                 continue
-            if _is_mortally_wounded(log, char_a.name) or _is_mortally_wounded(log, char_b.name):
-                continue
             opp_name = char_b.name if name == char_a.name else char_a.name
-            _resolve_shinjo_phase10_attack(
-                log, name, opp_name, fighters, actions_remaining,
-                void_points, dan_points, temp_void, matsu_bonuses,
-                shinjo_bonuses, lunge_target_bonus,
-            )
+            while actions_remaining[name]:
+                if _is_mortally_wounded(log, char_a.name) or _is_mortally_wounded(log, char_b.name):
+                    break
+                dice_before = len(actions_remaining[name])
+                _resolve_shinjo_phase10_attack(
+                    log, name, opp_name, fighters, actions_remaining,
+                    void_points, dan_points, temp_void, matsu_bonuses,
+                    shinjo_bonuses, lunge_target_bonus,
+                )
+                if len(actions_remaining[name]) >= dice_before:
+                    break  # safety: no die consumed, avoid infinite loop
 
         # Check for combat end
         if _is_mortally_wounded(log, char_a.name):
@@ -2182,10 +2251,10 @@ def _resolve_attack(
 
     predeclared = False
     if has_action_in_phase and def_parry_rank > 0:
-        # Shinjo: don't pre-declare with only 1 die (save for phase 10
-        # attack), unless near mortal wound.
+        # Shinjo: don't pre-declare with ≤2 dice (with 2 dice, prefer
+        # reactive parry after seeing the roll; with 1 die, save for attack).
         shinjo_skip_predeclare = False
-        if def_is_shinjo and len(actions_remaining[defender_name]) <= 1:
+        if def_is_shinjo and len(actions_remaining[defender_name]) <= 2:
             near_mortal = (
                 log.wounds[defender_name].serious_wounds
                 >= 2 * log.wounds[defender_name].earth_ring - 1
@@ -2550,13 +2619,29 @@ def _resolve_attack(
         # Pre-declared: die already consumed, always parry
         can_parry = True
     elif def_is_shinjo and has_action_in_phase and def_parry_rank > 0:
-        # Shinjo reactive parry: only parry if 2+ dice remain (keep ≥1 for phase 10 attack)
-        # Unless near mortal wound, then always parry
+        # Shinjo reactive parry decision based on remaining dice:
+        # 3+ dice: always parry (plenty of dice for phase 10)
+        # 2 dice: smart parry — only if hit is dangerous enough
+        # 1 die: don't parry unless near mortal (save for phase 10 attack)
         wound_info = log.wounds[defender_name]
         near_mortal = (
             wound_info.serious_wounds >= 2 * wound_info.earth_ring - 1
         )
-        if len(actions_remaining[defender_name]) > 1 or near_mortal:
+        dice_count = len(actions_remaining[defender_name])
+        if dice_count > 2:
+            can_parry = True
+        elif dice_count == 2:
+            can_parry = _shinjo_should_parry_with_two_dice(
+                attack_total=attack_action.total,
+                attack_tn=tn,
+                weapon_rolled=attacker_weapon.rolled,
+                weapon_kept=attacker_weapon.kept,
+                attacker_fire=attacker.rings.fire.value,
+                defender_serious_wounds=wound_info.serious_wounds,
+                defender_earth_ring=wound_info.earth_ring,
+                defender_light_wounds=wound_info.light_wounds,
+            )
+        elif near_mortal:
             can_parry = True
         # Shinjo never interrupts
     elif has_action_in_phase and def_parry_rank > 0:

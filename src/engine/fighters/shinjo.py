@@ -359,7 +359,8 @@ class ShinjoFighter(Fighter):
         return note
 
     def on_parry_attempt(
-        self, parry_succeeded: bool, margin: int
+        self, parry_succeeded: bool, margin: int,
+        attacker_name: str = "", phase: int = 0,
     ) -> None:
         """3rd Dan: decrease remaining dice by Attack rank.
 

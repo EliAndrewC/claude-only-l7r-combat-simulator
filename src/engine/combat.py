@@ -152,10 +152,11 @@ def make_wound_check(
     void_spend: int = 0,
     extra_rolled: int = 0,
     tn_bonus: int = 0,
+    extra_kept: int = 0,
 ) -> tuple[bool, int, list[int], list[int]]:
     """Make a wound check against the current light wound total.
 
-    Roll (Water+1+extra_rolled+void_spend)k(Water+void_spend)
+    Roll (Water+1+extra_rolled+void_spend)k(Water+void_spend+extra_kept)
     vs TN = light_wounds + tn_bonus.
     Failure: 1 serious wound + 1 per 10 failed by (using original TN, not raised).
 
@@ -166,6 +167,7 @@ def make_wound_check(
         extra_rolled: Extra unkept dice to roll (e.g. from ability 7).
         tn_bonus: Bonus added to TN for pass/fail (e.g. from ability 10).
             Serious wound calculation uses the original TN.
+        extra_kept: Extra kept dice (e.g. Shiba 4th Dan +3k1).
 
     Returns:
         Tuple of (passed, roll_total, all_dice, kept_dice).
@@ -176,7 +178,7 @@ def make_wound_check(
     if void_spend < 0:
         raise ValueError(f"void_spend must be >= 0, got {void_spend}")
     rolled = water_ring + 1 + extra_rolled + void_spend
-    kept = water_ring + void_spend
+    kept = water_ring + void_spend + extra_kept
     base_tn = wound_tracker.light_wounds
     effective_tn = base_tn + tn_bonus
 

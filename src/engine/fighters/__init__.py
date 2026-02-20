@@ -61,6 +61,10 @@ def create_fighter(
         from src.engine.fighters.hida import HidaFighter
 
         fighter = HidaFighter(name, state, char=char, weapon=weapon, **kwargs)
+    elif school == "Shiba Bushi":
+        from src.engine.fighters.shiba import ShibaFighter
+
+        fighter = ShibaFighter(name, state, char=char, weapon=weapon, **kwargs)
     elif char.profession_abilities:
         from src.engine.fighters.waveman import WaveManFighter
 

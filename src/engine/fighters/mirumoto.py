@@ -327,7 +327,10 @@ class MirumotoFighter(Fighter):
                 )
         return 0, ""
 
-    def on_parry_attempt(self, parry_succeeded: bool, margin: int) -> None:
+    def on_parry_attempt(
+        self, parry_succeeded: bool, margin: int,
+        attacker_name: str = "", phase: int = 0,
+    ) -> None:
         """School Ability: +1 temporary void after every parry attempt."""
         self.temp_void += 1
 

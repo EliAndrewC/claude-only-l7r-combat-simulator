@@ -49,6 +49,7 @@ class Fighter:
         self.matsu_bonuses = matsu_bonuses if matsu_bonuses is not None else []
         self.shinjo_bonuses = shinjo_bonuses if shinjo_bonuses is not None else []
         self.lunge_target_bonus = lunge_target_bonus
+        self.parry_tn_reduction = 0
 
     # -- Convenience accessors ------------------------------------------
 
@@ -328,7 +329,10 @@ class Fighter:
         """
         return 0, ""
 
-    def on_parry_attempt(self, parry_succeeded: bool, margin: int) -> None:
+    def on_parry_attempt(
+        self, parry_succeeded: bool, margin: int,
+        attacker_name: str = "", phase: int = 0,
+    ) -> None:
         """Called after every parry attempt (default: no-op)."""
 
     def post_parry_effect_description(
@@ -459,6 +463,25 @@ class Fighter:
     def wound_check_extra_rolled(self) -> int:
         """Extra rolled dice on wound check (default 0)."""
         return 0
+
+    def wound_check_extra_kept(self) -> int:
+        """Extra kept dice on wound check (default 0)."""
+        return 0
+
+    def min_interrupt_dice(self) -> int:
+        """Minimum dice needed for interrupt parry (default 2)."""
+        return 2
+
+    def consume_interrupt_parry_dice(self) -> tuple[list[int], int]:
+        """Consume dice for interrupt parry. Returns (consumed, parry_die_value).
+
+        Default: consume 2 highest dice, parry_die_value=0.
+        """
+        remaining = sorted(self.actions_remaining, reverse=True)
+        consumed = remaining[:2]
+        for die in consumed:
+            self.actions_remaining.remove(die)
+        return consumed, 0
 
     def wound_check_flat_bonus(self) -> tuple[int, str]:
         """Flat bonus added to wound check total (default 0).

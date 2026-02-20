@@ -508,7 +508,8 @@ You roll an extra 3k1 on wound checks.
 **Fifth Dan:**
 After you successfully parry, the TN to hit the parried opponent on 
 the next attack directed at them this combat is lowered by the 
-amount by which your parry roll exceeded its TN.
+amount by which your parry roll exceeded its TN.  This can lowed the TN to a
+negative number.
 
 
 ## Shinjo Bushi School

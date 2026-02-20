@@ -369,6 +369,14 @@ class Fighter:
 
     # -- Damage hooks ---------------------------------------------------
 
+    def lunge_extra_rolled(self) -> int:
+        """Extra rolled dice on lunge attacks (default 0)."""
+        return 0
+
+    def lunge_damage_survives_parry(self) -> bool:
+        """Whether lunge bonus die is immune to parry reduction (default False)."""
+        return False
+
     def damage_parry_reduction(self, defender_parry_rank: int) -> int:
         """How much of defender's parry rank reduces extra dice (default: full)."""
         return defender_parry_rank
@@ -377,10 +385,39 @@ class Fighter:
         """Whether a near-miss DA still hits (default False)."""
         return False
 
+    def should_trade_damage_for_wound(
+        self, damage_rolled: int,
+    ) -> tuple[bool, int, str]:
+        """Whether to trade damage dice for an automatic serious wound.
+
+        Args:
+            damage_rolled: Total rolled damage dice count.
+
+        Returns:
+            Tuple of (should_trade, dice_to_remove, description_note).
+        """
+        return False, 0, ""
+
+    def post_damage_effect(self, defender_name: str) -> str:
+        """Effect applied after dealing damage (default: no-op).
+
+        Returns description note.
+        """
+        return ""
+
+    def resolve_post_attack_interrupt(
+        self, attacker_name: str, phase: int,
+    ) -> None:
+        """Reactive action after being attacked (default: no-op)."""
+
     # -- Wound check hooks (as defender) --------------------------------
 
     def wound_check_extra_rolled(self) -> int:
         """Extra rolled dice on wound check (default 0)."""
+        return 0
+
+    def wound_check_flat_bonus(self) -> int:
+        """Flat bonus added to wound check total (default 0)."""
         return 0
 
     def wound_check_void_strategy(self, water_ring: int, light_wounds: int) -> int:

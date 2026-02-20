@@ -275,15 +275,23 @@ def _resolve_attack(
     lunge_skill = attacker.get_skill("Lunge")
     lunge_rank = lunge_skill.rank if lunge_skill else 0
 
-    attack_choice, choice_void = attacker_fighter.choose_attack(
-        defender_name, phase,
-    )
-    if attack_choice == "double_attack":
-        is_double_attack = True
-        da_void_spend = choice_void
-    elif attack_choice == "lunge":
+    # Check for forced lunge (e.g. Otaku counter-lunge) before choose_attack
+    counter_lunge_label = ""
+    if getattr(attacker_fighter, '_force_lunge', False):
         is_lunge = True
-        lunge_void_spend = choice_void
+        cl_die = getattr(attacker_fighter, '_counter_lunge_die', None)
+        die_note = f" (consuming phase {cl_die} die)" if cl_die else ""
+        counter_lunge_label = f"SA counter-lunge{die_note}"
+    else:
+        attack_choice, choice_void = attacker_fighter.choose_attack(
+            defender_name, phase,
+        )
+        if attack_choice == "double_attack":
+            is_double_attack = True
+            da_void_spend = choice_void
+        elif attack_choice == "lunge":
+            is_lunge = True
+            lunge_void_spend = choice_void
 
     if is_double_attack:
         tn += 20
@@ -310,7 +318,8 @@ def _resolve_attack(
 
     if is_lunge:
         # Lunge attack: uses Lunge knack + Fire
-        lng_rolled = lunge_rank + attacker.rings.fire.value
+        lunge_extra = attacker_fighter.lunge_extra_rolled()
+        lng_rolled = lunge_rank + attacker.rings.fire.value + lunge_extra
         lng_kept = attacker.rings.fire.value
 
         # Void spending on lunge
@@ -351,6 +360,7 @@ def _resolve_attack(
                 f" vs TN {tn}{void_note}{sa_note}"
             ),
             dice_pool=_format_pool_with_overflow(lng_rolled, lng_kept),
+            label=counter_lunge_label,
         )
         # Lunge: opponent's next attack gets -5 TN
         defender_fighter.lunge_target_bonus = 5
@@ -520,6 +530,14 @@ def _resolve_attack(
     # Attack missed — dice already consumed by pre-declaration (if any),
     # reflected in attack_action.status_after snapshot.
     if not attack_action.success:
+        # SA counter-lunge fires even on a miss
+        if (
+            not log.wounds[attacker_name].is_mortally_wounded
+            and not log.wounds[defender_name].is_mortally_wounded
+        ):
+            defender_fighter.resolve_post_attack_interrupt(
+                attacker_name, phase,
+            )
         return
 
     # Annotate attack hit with expected damage pool (assuming no parry)
@@ -528,7 +546,7 @@ def _resolve_attack(
     no_parry_extra = max(0, (attack_action.total - extra_tn) // 5)
     # Account for ability 3 weapon boost and lunge bonus in the preview
     preview_weapon_rolled = attacker_fighter.weapon_rolled_boost(weapon.rolled, weapon.kept)
-    lunge_preview_bonus = 1 if is_lunge else 0
+    lunge_preview_bonus = (1 + attacker_fighter.lunge_extra_rolled()) if is_lunge else 0
     raw_rolled = (
         preview_weapon_rolled + attacker.rings.fire.value
         + no_parry_extra + lunge_preview_bonus
@@ -642,6 +660,14 @@ def _resolve_attack(
             )
             parry_action.status_after = state.snapshot_status()
             log.add_action(parry_action)
+            # SA counter-lunge fires even after auto-parry
+            if (
+                not log.wounds[attacker_name].is_mortally_wounded
+                and not log.wounds[defender_name].is_mortally_wounded
+            ):
+                defender_fighter.resolve_post_attack_interrupt(
+                    attacker_name, phase,
+                )
             return
 
         air_value = defender.rings.air.value
@@ -779,21 +805,35 @@ def _resolve_attack(
         log.add_action(parry_action)
 
         if parry_succeeded:
+            # SA counter-lunge fires even after successful parry
+            if (
+                not log.wounds[attacker_name].is_mortally_wounded
+                and not log.wounds[defender_name].is_mortally_wounded
+            ):
+                defender_fighter.resolve_post_attack_interrupt(
+                    attacker_name, phase,
+                )
             return
 
         # Failed parry: reduce extra dice by defender's parry rank (not all)
+        # Lunge dice are included in the reducible pool (unless immune)
         if not parry_succeeded:
             all_extra = max(0, (attack_action.total - (base_tn if is_double_attack else tn)) // 5)
+            lunge_dice = lunge_preview_bonus
+            all_extra_with_lunge = all_extra + lunge_dice
             parry_reduction = attacker_fighter.damage_parry_reduction(def_parry_rank)
-            if all_extra > 0:
-                reduced_extra = max(0, all_extra - parry_reduction)
+            if all_extra_with_lunge > 0:
+                reduced_extra = max(0, all_extra_with_lunge - parry_reduction)
+                # Lunge die survives parry reduction (e.g. Otaku 4th Dan)
+                if lunge_dice > 0 and attacker_fighter.lunge_damage_survives_parry():
+                    reduced_extra = max(0, all_extra - parry_reduction) + lunge_dice
                 full_rolled = (
                     preview_weapon_rolled + attacker.rings.fire.value
-                    + all_extra + lunge_preview_bonus
+                    + all_extra + lunge_dice
                 )
                 reduced_rolled = (
                     preview_weapon_rolled + attacker.rings.fire.value
-                    + reduced_extra + lunge_preview_bonus
+                    + reduced_extra
                 )
                 # DA failed parry: serious wound converts to +2 rolled dice
                 da_conversion_dice = 2 if is_double_attack and not is_near_miss_da else 0
@@ -814,11 +854,21 @@ def _resolve_attack(
     # For double attack, extra dice use base_tn (before +20)
     extra_tn_for_dice = base_tn if is_double_attack else tn
     all_extra_dice = max(0, (attack_action.total - extra_tn_for_dice) // 5)
+
+    # Lunge dice: included in the reducible pool
+    lunge_damage_bonus = lunge_preview_bonus
+
     if parry_attempted:
         parry_reduction = attacker_fighter.damage_parry_reduction(def_parry_rank)
-        extra_dice = max(0, all_extra_dice - parry_reduction)
+        all_reducible = all_extra_dice + lunge_damage_bonus
+        reduced = max(0, all_reducible - parry_reduction)
+        # Lunge die survives parry reduction (e.g. Otaku 4th Dan)
+        if lunge_damage_bonus > 0 and attacker_fighter.lunge_damage_survives_parry():
+            extra_dice = max(0, all_extra_dice - parry_reduction) + lunge_damage_bonus
+        else:
+            extra_dice = reduced
     else:
-        extra_dice = all_extra_dice
+        extra_dice = all_extra_dice + lunge_damage_bonus
 
     # Ability 9: Failed parry bonus — via Fighter hook
     if parry_attempted and not parry_succeeded:
@@ -846,10 +896,19 @@ def _resolve_attack(
     # Ability 3: Weapon damage boost — via Fighter hook
     boosted_rolled = attacker_fighter.weapon_rolled_boost(weapon.rolled, weapon.kept)
 
-    # Lunge: +1 rolled damage die
-    lunge_damage_bonus = 1 if is_lunge else 0
+    # 5th Dan trade: trade damage dice for automatic serious wound
+    trade_sw = 0
+    trade_note = ""
+    total_dmg_pool = extra_dice + da_extra_rolled
+    should_trade, dice_removed, t_note = attacker_fighter.should_trade_damage_for_wound(
+        boosted_rolled + attacker.rings.fire.value + total_dmg_pool,
+    )
+    if should_trade and total_dmg_pool >= dice_removed:
+        extra_dice = max(0, extra_dice - dice_removed)
+        trade_sw = 1
+        trade_note = t_note
 
-    extra_dmg = extra_dice + da_extra_rolled + lunge_damage_bonus
+    extra_dmg = extra_dice + da_extra_rolled
     damage_action = roll_damage(
         attacker, boosted_rolled, weapon.kept, extra_dmg,
     )
@@ -858,7 +917,7 @@ def _resolve_attack(
     # Show overflow conversion in damage dice pool
     dmg_rolled = (
         boosted_rolled + attacker.rings.fire.value
-        + extra_dice + da_extra_rolled + lunge_damage_bonus
+        + extra_dice + da_extra_rolled
     )
     damage_action.dice_pool = _format_pool_with_overflow(dmg_rolled, weapon.kept)
 
@@ -886,6 +945,16 @@ def _resolve_attack(
     if da_serious_wound > 0:
         wound_tracker.serious_wounds += da_serious_wound
         damage_action.description += f" (double attack: +{da_serious_wound} serious wound)"
+
+    # 5th Dan trade: apply auto serious wound from damage trade
+    if trade_sw > 0:
+        wound_tracker.serious_wounds += trade_sw
+        damage_action.description += trade_note
+
+    # Post-damage effect via Fighter hook (e.g. Otaku 3rd Dan dice slowdown)
+    post_dmg_note = attacker_fighter.post_damage_effect(defender_name)
+    if post_dmg_note:
+        damage_action.description += post_dmg_note
 
     # Snapshot after damage is applied
     damage_action.status_after = state.snapshot_status()
@@ -927,6 +996,15 @@ def _resolve_attack(
         wound_tracker, water_value, void_spend=void_spend,
         extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
     )
+
+    # Wound check flat bonus via Fighter hook (e.g. Otaku 2nd Dan +5)
+    wc_flat_bonus = defender_fighter.wound_check_flat_bonus()
+    wc_flat_note = ""
+    if wc_flat_bonus > 0:
+        wc_total += wc_flat_bonus
+        effective_tn = wound_tracker.light_wounds + ab10_bonus
+        passed = wc_total >= effective_tn
+        wc_flat_note = f" (otaku 2nd Dan: free raise +{wc_flat_bonus})"
 
     # Ability 5: Free crippled reroll on wound check
     if not passed and log.wounds[defender_name].is_crippled:
@@ -997,7 +1075,7 @@ def _resolve_attack(
         success=passed,
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
-            f"(rolled {wc_total}){void_note}{void_spent_note}{wc_bonus_note}"
+            f"(rolled {wc_total}){void_note}{void_spent_note}{wc_flat_note}{wc_bonus_note}"
             f"{convert_note}{da_auto_sw_note}{ab10_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
@@ -1015,5 +1093,12 @@ def _resolve_attack(
 
     # Snapshot after wound check (reflects serious wound promotion if failed)
     wc_action.status_after = state.snapshot_status()
+
+    # Post-attack interrupt via Fighter hook (e.g. Otaku SA counter-lunge)
+    if (
+        not log.wounds[attacker_name].is_mortally_wounded
+        and not log.wounds[defender_name].is_mortally_wounded
+    ):
+        defender_fighter.resolve_post_attack_interrupt(attacker_name, phase)
 
 

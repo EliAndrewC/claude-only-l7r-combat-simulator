@@ -250,6 +250,15 @@ def _resolve_kakita_phase0_attack(
         extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
     )
 
+    # Wound check flat bonus via Fighter hook (e.g. Otaku 2nd Dan +5)
+    wc_flat_bonus = def_ctx.wound_check_flat_bonus()
+    wc_flat_note = ""
+    if wc_flat_bonus > 0:
+        wc_total += wc_flat_bonus
+        effective_tn = wound_tracker.light_wounds + ab10_bonus
+        passed = wc_total >= effective_tn
+        wc_flat_note = f" (otaku 2nd Dan: free raise +{wc_flat_bonus})"
+
     # Shinjo 5th Dan: apply stored bonuses after seeing the roll
     shinjo_bonus_note = ""
     if (def_is_shinjo and def_dan_shinjo >= 5
@@ -335,7 +344,8 @@ def _resolve_kakita_phase0_attack(
         success=passed,
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
-            f"(rolled {wc_total}){void_note}{shinjo_bonus_note}{convert_note}{ab10_note}"
+            f"(rolled {wc_total}){void_note}{wc_flat_note}"
+            f"{shinjo_bonus_note}{convert_note}{ab10_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )
@@ -543,6 +553,15 @@ def _resolve_kakita_5th_dan(
         extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
     )
 
+    # Wound check flat bonus via Fighter hook (e.g. Otaku 2nd Dan +5)
+    wc_flat_bonus = def_ctx.wound_check_flat_bonus()
+    wc_flat_note = ""
+    if wc_flat_bonus > 0:
+        wc_total += wc_flat_bonus
+        effective_tn = wound_tracker.light_wounds + ab10_bonus
+        passed = wc_total >= effective_tn
+        wc_flat_note = f" (otaku 2nd Dan: free raise +{wc_flat_bonus})"
+
     # Shinjo 5th Dan: apply stored bonuses after seeing the roll
     shinjo_bonus_note = ""
     if (def_is_shinjo and def_dan_shinjo >= 5
@@ -627,7 +646,8 @@ def _resolve_kakita_5th_dan(
         success=passed,
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
-            f"(rolled {wc_total}){void_note}{shinjo_bonus_note}{convert_note}{ab10_note}"
+            f"(rolled {wc_total}){void_note}{wc_flat_note}"
+            f"{shinjo_bonus_note}{convert_note}{ab10_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )

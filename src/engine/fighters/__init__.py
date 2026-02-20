@@ -53,6 +53,10 @@ def create_fighter(
         from src.engine.fighters.shinjo import ShinjoFighter
 
         fighter = ShinjoFighter(name, state, char=char, weapon=weapon, **kwargs)
+    elif school == "Otaku Bushi":
+        from src.engine.fighters.otaku import OtakuFighter
+
+        fighter = OtakuFighter(name, state, char=char, weapon=weapon, **kwargs)
     elif char.profession_abilities:
         from src.engine.fighters.waveman import WaveManFighter
 

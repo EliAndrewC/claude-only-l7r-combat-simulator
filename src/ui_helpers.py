@@ -315,6 +315,8 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
         icon = f"❗{icon}"
     elif action.action_type == ActionType.IAIJUTSU and "(interrupt)" in action.description:
         icon = f"❗{icon}"
+    elif action.label and "counter-lunge" in action.label:
+        icon = f"❗{icon}"
 
     if action.action_type == ActionType.INITIATIVE:
         phase_str = "Initiative"

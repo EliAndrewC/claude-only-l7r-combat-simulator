@@ -1,6 +1,6 @@
 """Tests for the Shinjo Bushi school builder."""
 
-from src.engine.shinjo import (
+from src.engine.character_builders.shinjo import (
     build_shinjo_from_xp,
     compute_shinjo_stats_from_xp,
 )

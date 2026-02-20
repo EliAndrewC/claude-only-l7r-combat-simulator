@@ -3,30 +3,48 @@
 from unittest.mock import patch
 
 from src.engine.combat import create_combat_log
-from src.engine.simulation import (
-    _apply_ability4_rounding,
-    _compute_dan_roll_bonus,
-    _damage_pool_str,
-    _estimate_roll,
-    _format_pool_with_overflow,
+from src.engine.combat_state import CombatState
+from src.engine.fighters.kakita import (
     _kakita_attack_choice,
     _kakita_should_phase0_attack,
-    _matsu_attack_choice,
+)
+from src.engine.fighters.matsu import _matsu_attack_choice
+from src.engine.fighters.shinjo import _shinjo_attack_choice
+from src.engine.simulation import (
+    _damage_pool_str,
+    _format_pool_with_overflow,
     _resolve_attack,
-    _select_shinjo_wc_bonuses,
-    _shinjo_attack_choice,
-    _shinjo_should_parry_with_two_dice,
     _should_convert_light_to_serious,
-    _should_interrupt_parry,
-    _should_predeclare_parry,
     _should_spend_void_on_wound_check,
-    _snapshot_status,
     _spend_void,
     _tiebreak_key,
     _total_void,
-    _try_phase_shift_parry,
     _void_spent_label,
     simulate_combat,
+)
+from src.engine.simulation_utils import (
+    apply_ability4_rounding as _apply_ability4_rounding,
+)
+from src.engine.simulation_utils import (
+    compute_dan_roll_bonus as _compute_dan_roll_bonus,
+)
+from src.engine.simulation_utils import (
+    estimate_roll as _estimate_roll,
+)
+from src.engine.simulation_utils import (
+    select_shinjo_wc_bonuses as _select_shinjo_wc_bonuses,
+)
+from src.engine.simulation_utils import (
+    shinjo_should_parry_with_two_dice as _shinjo_should_parry_with_two_dice,
+)
+from src.engine.simulation_utils import (
+    should_interrupt_parry as _should_interrupt_parry,
+)
+from src.engine.simulation_utils import (
+    should_predeclare_parry as _should_predeclare_parry,
+)
+from src.engine.simulation_utils import (
+    try_phase_shift_parry as _try_phase_shift_parry,
 )
 from src.models.character import (
     Character,
@@ -93,7 +111,8 @@ class TestSnapshotStatus:
         }
         actions_remaining: dict[str, list[int]] = {"A": [3, 5], "B": [2, 4, 7]}
         void_points = {"A": 2, "B": 2}
-        result = _snapshot_status(log, fighters, actions_remaining, void_points)
+        state = _make_state_from_dicts(log, fighters, actions_remaining, void_points)
+        result = state.snapshot_status()
         assert "A" in result
         assert "B" in result
         assert isinstance(result["A"], FighterStatus)
@@ -110,7 +129,8 @@ class TestSnapshotStatus:
         }
         actions_remaining: dict[str, list[int]] = {"A": [5], "B": [3, 8]}
         void_points = {"A": 2, "B": 2}
-        result = _snapshot_status(log, fighters, actions_remaining, void_points)
+        state = _make_state_from_dicts(log, fighters, actions_remaining, void_points)
+        result = state.snapshot_status()
         assert result["A"].light_wounds == 7
         assert result["A"].serious_wounds == 1
         assert result["A"].actions_remaining == [5]
@@ -127,7 +147,8 @@ class TestSnapshotStatus:
             "B": {"char": b, "weapon": KATANA},
         }
         void_points = {"A": 2, "B": 2}
-        result = _snapshot_status(log, fighters, {"A": [], "B": []}, void_points)
+        state = _make_state_from_dicts(log, fighters, {"A": [], "B": []}, void_points)
+        result = state.snapshot_status()
         assert result["A"].is_crippled is True
         assert result["A"].is_mortally_wounded is False
 
@@ -140,7 +161,8 @@ class TestSnapshotStatus:
             "B": {"char": b, "weapon": KATANA},
         }
         void_points = {"A": 1, "B": 2}
-        result = _snapshot_status(log, fighters, {"A": [], "B": []}, void_points)
+        state = _make_state_from_dicts(log, fighters, {"A": [], "B": []}, void_points)
+        result = state.snapshot_status()
         assert result["A"].void_points_max == a.void_points_max
         assert result["A"].void_points == 1
         assert result["B"].void_points == 2
@@ -242,7 +264,9 @@ class TestKnownBonusParameters:
 
     def test_combat_roll_known_bonus_reduces_void(self) -> None:
         """Known bonus on combat roll reduces void spending."""
-        from src.engine.simulation import _should_spend_void_on_combat_roll
+        from src.engine.simulation_utils import (
+            should_spend_void_on_combat_roll as _should_spend_void_on_combat_roll,
+        )
 
         # 6k3 vs TN 25 — needs void
         base = _should_spend_void_on_combat_roll(6, 3, 25, 3, 2)
@@ -266,7 +290,7 @@ class TestKnownBonusParameters:
 
     def test_predeclare_known_bonus_reduces_need(self) -> None:
         """Known parry bonus reduces the need to predeclare."""
-        from src.engine.simulation import _should_predeclare_parry
+        from src.engine.simulation_utils import should_predeclare_parry as _should_predeclare_parry
 
         # parry=2, air=2 → 4k2, expected≈14 < 25 → should predeclare
         assert _should_predeclare_parry(2, 2, 25, False)
@@ -275,7 +299,7 @@ class TestKnownBonusParameters:
 
     def test_reactive_parry_known_bonus_improves_odds(self) -> None:
         """Known parry bonus makes reactive parry more likely via odds check."""
-        from src.engine.simulation import _should_reactive_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # parry=1, air=2 → 3k2, expected≈12.5; attack=25 → 12.5 < 15 → skip
         assert not _should_reactive_parry(1, 2, 25, 25, 4, 3, 0, 3, False)
@@ -542,7 +566,7 @@ class TestCrippledNoExplode:
                 "dice_rolled": [5, 3], "dice_kept": [5, 3],
                 "tn": 15, "description": "",
             })()
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Crippled"], fighters["Healthy"],
                 "Crippled", "Healthy", fighters, actions_remaining, void_points,
             )
@@ -581,7 +605,7 @@ class TestCrippledNoExplode:
             )
             # Parry roll returns a failure
             mock_rak.return_value = ([8, 5], [8, 5], 13)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["CrippledDef"],
                 "Attacker", "CrippledDef", fighters, actions_remaining, void_points,
             )
@@ -615,7 +639,7 @@ class TestCrippledNoExplode:
                 "dice_rolled": [5, 3], "dice_kept": [5, 3],
                 "tn": 15, "description": "",
             })()
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Healthy"], fighters["Defender"],
                 "Healthy", "Defender", fighters, actions_remaining, void_points,
             )
@@ -665,7 +689,7 @@ class TestCrippledVoidReroll:
             # reroll_tens returns upgraded result that succeeds
             mock_reroll.return_value = ([18, 7, 5, 3, 2], [18, 7, 5], 30)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Crippled"], fighters["Target"],
                 "Crippled", "Target", fighters, actions_remaining, void_points,
             )
@@ -703,7 +727,7 @@ class TestCrippledVoidReroll:
                 description="Crippled attacks: 5k3 vs TN 25",
             )
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Crippled"], fighters["Target"],
                 "Crippled", "Target", fighters, actions_remaining, void_points,
             )
@@ -918,7 +942,7 @@ class TestPreDeclaredParry:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=True):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=True):
             mock_attack.return_value = CombatAction(
                 phase=5, actor="Attacker", action_type=ActionType.ATTACK,
                 dice_rolled=[20, 15], dice_kept=[20, 15],
@@ -927,7 +951,7 @@ class TestPreDeclaredParry:
             # Parry roll: raw total 32, +5 bonus = 37, vs TN 35 (raw attack total)
             mock_rak.return_value = ([20, 12, 8], [20, 12], 32)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -961,7 +985,7 @@ class TestPreDeclaredParry:
         from src.models.combat import CombatAction
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=True):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=True):
             # Attack misses
             mock_attack.return_value = CombatAction(
                 phase=5, actor="Attacker", action_type=ActionType.ATTACK,
@@ -969,7 +993,7 @@ class TestPreDeclaredParry:
                 total=8, tn=15, success=False, description="Attacker attacks",
             )
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -998,7 +1022,7 @@ class TestPreDeclaredParry:
         actions_remaining = {"Attacker": [7], "Defender": [3, 8]}
         void_points = {"Attacker": 2, "Defender": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Defender"],
             "Attacker", "Defender", fighters, actions_remaining, void_points,
         )
@@ -1034,7 +1058,7 @@ class TestInterruptParry:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_interrupt_parry", return_value=True):
+             patch("src.engine.simulation_utils.should_interrupt_parry", return_value=True):
             mock_attack.return_value = CombatAction(
                 phase=5, actor="Attacker", action_type=ActionType.ATTACK,
                 dice_rolled=[20, 15], dice_kept=[20, 15],
@@ -1044,7 +1068,7 @@ class TestInterruptParry:
             # Parry roll
             mock_rak.return_value = ([20, 12, 8], [20, 12], 32)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1072,7 +1096,7 @@ class TestInterruptParry:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_interrupt_parry", return_value=True):
+             patch("src.engine.simulation_utils.should_interrupt_parry", return_value=True):
             mock_attack.return_value = CombatAction(
                 phase=5, actor="Attacker", action_type=ActionType.ATTACK,
                 dice_rolled=[20, 15], dice_kept=[20, 15],
@@ -1081,7 +1105,7 @@ class TestInterruptParry:
             )
             mock_rak.return_value = ([20, 12, 8], [20, 12], 32)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1117,7 +1141,7 @@ class TestInterruptParry:
                 total=35, tn=15, success=True, description="Attacker attacks",
             )
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1200,7 +1224,7 @@ class TestInterruptParry:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_interrupt_parry", return_value=True):
+             patch("src.engine.simulation_utils.should_interrupt_parry", return_value=True):
             mock_attack.return_value = CombatAction(
                 phase=5, actor="Attacker", action_type=ActionType.ATTACK,
                 dice_rolled=[20, 15], dice_kept=[20, 15],
@@ -1209,7 +1233,7 @@ class TestInterruptParry:
             )
             mock_rak.return_value = ([20, 12, 8], [20, 12], 32)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1301,7 +1325,7 @@ class TestDicePoolOnParryAndWoundCheck:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=True):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=True):
             mock_attack.return_value = CombatAction(
                 phase=5, actor="Attacker", action_type=ActionType.ATTACK,
                 dice_rolled=[20, 15], dice_kept=[20, 15],
@@ -1310,7 +1334,7 @@ class TestDicePoolOnParryAndWoundCheck:
             )
             mock_rak.return_value = ([20, 12, 8], [20, 12], 32)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1357,7 +1381,7 @@ class TestDicePoolOnParryAndWoundCheck:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1410,7 +1434,7 @@ class TestDamageContext:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1439,7 +1463,7 @@ class TestDamageContext:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=False):
             # Attack hits with total=25, tn=15 → extra = (25-15)//5 = 2
             # Defender has Parry rank 2, so reduces by 2 → 0 extras remain
             mock_attack.return_value = CombatAction(
@@ -1451,7 +1475,7 @@ class TestDamageContext:
             # Parry fails
             mock_rak.return_value = ([10, 8, 5], [10, 8], 18)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1553,7 +1577,7 @@ class TestDamageOverflowAnnotations:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1582,7 +1606,7 @@ class TestDamageOverflowAnnotations:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=False):
             # Attack total=40, tn=15 → extra = (40-15)//5 = 5
             # Parry rank 2 → reduces by 2 → 3 extras remain
             # full_rolled = 4+3+5 = 12, reduced_rolled = 4+3+3 = 10
@@ -1594,7 +1618,7 @@ class TestDamageOverflowAnnotations:
             )
             mock_rak.return_value = ([10, 8, 5], [10, 8], 18)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1624,7 +1648,7 @@ class TestDamageOverflowAnnotations:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=False):
             # Attack total=17, tn=15 → extra = (17-15)//5 = 0
             mock_attack.return_value = CombatAction(
                 phase=5, actor="Attacker", action_type=ActionType.ATTACK,
@@ -1634,7 +1658,7 @@ class TestDamageOverflowAnnotations:
             )
             mock_rak.return_value = ([10, 8, 5], [10, 8], 18)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1665,7 +1689,7 @@ class TestDamageOverflowAnnotations:
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
              patch("src.engine.simulation.roll_damage") as mock_damage, \
              patch("src.engine.simulation.make_wound_check") as mock_wc, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=False):
             # Attack total=40, tn=15 → all_extra = 5
             # Defender Parry rank 2 → extra_dice = max(0, 5-2) = 3
             mock_attack.return_value = CombatAction(
@@ -1684,7 +1708,7 @@ class TestDamageOverflowAnnotations:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["Defender"],
                 "Attacker", "Defender", fighters, actions_remaining, void_points,
             )
@@ -1798,7 +1822,7 @@ class TestWaveManAttackReroll:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["Def"],
                 "WM", "Def", fighters, actions_remaining, void_points,
             )
@@ -1854,7 +1878,7 @@ class TestWaveManAttackReroll:
             )
             mock_wc.return_value = (True, 20, [12, 8], [12, 8])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["Def"],
                 "WM", "Def", fighters, actions_remaining, void_points,
             )
@@ -1903,7 +1927,7 @@ class TestWaveManAttackReroll:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["Def"],
                 "WM", "Def", fighters, actions_remaining, void_points,
             )
@@ -1932,7 +1956,7 @@ class TestWaveManParryTN:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=False):
             mock_attack.return_value = CombatAction(
                 phase=5, actor="WM", action_type=ActionType.ATTACK,
                 dice_rolled=[20, 15], dice_kept=[20, 15],
@@ -1943,7 +1967,7 @@ class TestWaveManParryTN:
             # With ability 2: TN = 20 + 5 = 25. 22 < 25 → fails.
             mock_rak.return_value = ([12, 10, 8], [12, 10], 22)
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["Def"],
                 "WM", "Def", fighters, actions_remaining, void_points,
             )
@@ -1991,7 +2015,7 @@ class TestWaveManWeaponBoost:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["Def"],
                 "WM", "Def", fighters, actions_remaining, void_points,
             )
@@ -2034,7 +2058,7 @@ class TestWaveManWeaponBoost:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["Def"],
                 "WM", "Def", fighters, actions_remaining, void_points,
             )
@@ -2091,7 +2115,7 @@ class TestWaveManFailedParryBonus:
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
              patch("src.engine.simulation.roll_damage") as mock_damage, \
              patch("src.engine.simulation.make_wound_check") as mock_wc, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=False):
             # Attack total=40, tn=15 → all_extra=5, parry_rank=2 → removed=2
             # Without ability 9: extra_dice=3
             # With ability 9 rank 1: bonus_back=min(2, 2*1)=2, extra_dice=3+2=5
@@ -2110,7 +2134,7 @@ class TestWaveManFailedParryBonus:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["Def"],
                 "WM", "Def", fighters, actions_remaining, void_points,
             )
@@ -2158,7 +2182,7 @@ class TestWaveManDamageReduction:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Atk"], fighters["WM"],
                 "Atk", "WM", fighters, actions_remaining, void_points,
             )
@@ -2202,7 +2226,7 @@ class TestWaveManDamageReduction:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Atk"], fighters["WM"],
                 "Atk", "WM", fighters, actions_remaining, void_points,
             )
@@ -2247,7 +2271,7 @@ class TestWaveManWoundCheckBonus:
             )
             mock_wc.return_value = (True, 33, [15, 10, 8, 7, 5], [15, 10, 8])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Atk"], fighters["WM"],
                 "Atk", "WM", fighters, actions_remaining, void_points,
             )
@@ -2293,7 +2317,7 @@ class TestWaveManWoundCheckTN:
             )
             mock_wc.return_value = (False, 12, [8, 4], [8, 4])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["Def"],
                 "WM", "Def", fighters, actions_remaining, void_points,
             )
@@ -2342,7 +2366,7 @@ class TestWaveManCrippledReroll:
         from src.models.combat import CombatAction
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
-             patch("src.engine.simulation.reroll_tens") as mock_reroll, \
+             patch("src.engine.fighters.waveman.reroll_tens") as mock_reroll, \
              patch("src.engine.simulation.roll_damage") as mock_damage, \
              patch("src.engine.simulation.make_wound_check") as mock_wc:
             # Attack misses with a 10 showing
@@ -2362,7 +2386,7 @@ class TestWaveManCrippledReroll:
             )
             mock_wc.return_value = (True, 20, [15], [15])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["Def"],
                 "WM", "Def", fighters, actions_remaining, void_points,
             )
@@ -2473,7 +2497,7 @@ class TestMirumotoFirstDan:
         actions_remaining = {"Miru": [5], "Target": [3, 7]}
         void_points = {"Miru": 0, "Target": 2}
 
-        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+        with patch("src.engine.fighters.mirumoto._should_use_double_attack") as mock_da, \
              patch("src.engine.simulation.roll_attack") as mock_attack:
             from src.models.combat import CombatAction
             mock_da.return_value = (False, 0)
@@ -2483,7 +2507,7 @@ class TestMirumotoFirstDan:
                 dice_kept=[8, 7, 5], total=20, tn=5, success=True,
                 description="Miru attacks",
             )
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Miru"], fighters["Target"],
                 "Miru", "Target", fighters, actions_remaining, void_points,
             )
@@ -2517,7 +2541,7 @@ class TestMirumotoFirstDan:
                 total=35, tn=15, success=True, description="Attacker attacks",
             )
             mock_rak.return_value = ([20, 15, 8], [20, 15, 8], 43)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["MiruDef"],
                 "Attacker", "MiruDef", fighters, actions_remaining, void_points,
             )
@@ -2556,7 +2580,7 @@ class TestMirumotoSecondDan:
             )
             # Parry roll: total 22, plus 5 free raise = 27 >= 25 = success
             mock_rak.return_value = ([12, 10, 8, 5, 3], [12, 10, 8], 30)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["MiruDef"],
                 "Attacker", "MiruDef", fighters, actions_remaining, void_points,
             )
@@ -2599,7 +2623,7 @@ class TestMirumotoSpecialAbility:
             )
             # Parry succeeds (returns early, no wound check to consume void)
             mock_rak.return_value = ([15, 10, 8], [15, 10, 8], 33)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["MiruDef"],
                 "Attacker", "MiruDef", fighters, actions_remaining, void_points,
                 temp_void=temp_void,
@@ -2629,7 +2653,7 @@ class TestMirumotoFourthDan:
         actions_remaining = {"MiruAtk": [5], "Defender": [5, 7]}
         void_points = {"MiruAtk": 0, "Defender": 0}
 
-        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+        with patch("src.engine.fighters.mirumoto._should_use_double_attack") as mock_da, \
              patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
              patch("src.engine.simulation.roll_damage") as mock_dmg:
@@ -2649,7 +2673,7 @@ class TestMirumotoFourthDan:
                 total=25, description="MiruAtk deals 25 damage",
                 dice_rolled=[10, 8, 5], dice_kept=[10, 8], dice_pool="7k2",
             )
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["MiruAtk"], fighters["Defender"],
                 "MiruAtk", "Defender", fighters, actions_remaining, void_points,
             )
@@ -2669,7 +2693,9 @@ class TestMirumotoFifthDan:
 
     def test_fifth_dan_void_bonus(self) -> None:
         """When 5th Dan Mirumoto spends void, each void adds +10 to combat roll."""
-        from src.engine.simulation import _should_spend_void_on_combat_roll
+        from src.engine.simulation_utils import (
+            should_spend_void_on_combat_roll as _should_spend_void_on_combat_roll,
+        )
         # High TN, void should provide +10 per void = much more valuable
         spend = _should_spend_void_on_combat_roll(
             rolled=6, kept=3, tn=30,
@@ -2684,7 +2710,9 @@ class TestVoidSpendOnCombatRoll:
 
     def test_void_spend_on_attack_when_helpful(self) -> None:
         """Spends void when close to TN."""
-        from src.engine.simulation import _should_spend_void_on_combat_roll
+        from src.engine.simulation_utils import (
+            should_spend_void_on_combat_roll as _should_spend_void_on_combat_roll,
+        )
         spend = _should_spend_void_on_combat_roll(
             rolled=5, kept=3, tn=25,
             void_available=2, max_spend=2,
@@ -2694,7 +2722,9 @@ class TestVoidSpendOnCombatRoll:
 
     def test_void_not_spent_when_easy_hit(self) -> None:
         """Doesn't spend when roll easily exceeds TN."""
-        from src.engine.simulation import _should_spend_void_on_combat_roll
+        from src.engine.simulation_utils import (
+            should_spend_void_on_combat_roll as _should_spend_void_on_combat_roll,
+        )
         spend = _should_spend_void_on_combat_roll(
             rolled=8, kept=4, tn=10,
             void_available=2, max_spend=2,
@@ -2704,7 +2734,9 @@ class TestVoidSpendOnCombatRoll:
 
     def test_void_reserved_for_wound_checks(self) -> None:
         """Never spends all void — result < void_available."""
-        from src.engine.simulation import _should_spend_void_on_combat_roll
+        from src.engine.simulation_utils import (
+            should_spend_void_on_combat_roll as _should_spend_void_on_combat_roll,
+        )
         # Only 1 void available — shouldn't spend the last one
         spend = _should_spend_void_on_combat_roll(
             rolled=5, kept=3, tn=20,
@@ -2736,7 +2768,7 @@ class TestDoubleAttack:
         actions_remaining = {"MiruAtk": [5], "Defender": [3, 7]}
         void_points = {"MiruAtk": 3, "Defender": 2}
 
-        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+        with patch("src.engine.fighters.mirumoto._should_use_double_attack") as mock_da, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
              patch("src.engine.simulation.roll_damage") as mock_dmg:
             from src.models.combat import CombatAction
@@ -2748,7 +2780,7 @@ class TestDoubleAttack:
                 total=25, description="MiruAtk deals 25 damage",
                 dice_rolled=[10, 8, 5], dice_kept=[10, 8], dice_pool="7k2",
             )
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["MiruAtk"], fighters["Defender"],
                 "MiruAtk", "Defender", fighters, actions_remaining, void_points,
             )
@@ -2776,7 +2808,7 @@ class TestDoubleAttack:
         actions_remaining = {"MiruAtk": [5], "Defender": [3, 7]}
         void_points = {"MiruAtk": 2, "Defender": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["MiruAtk"], fighters["Defender"],
             "MiruAtk", "Defender", fighters, actions_remaining, void_points,
         )
@@ -2803,7 +2835,7 @@ class TestDoubleAttack:
         actions_remaining = {"MiruAtk": [5], "Defender": [3, 7]}
         void_points = {"MiruAtk": 3, "Defender": 2}
 
-        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+        with patch("src.engine.fighters.mirumoto._should_use_double_attack") as mock_da, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
              patch("src.engine.simulation.roll_damage") as mock_dmg, \
              patch("src.engine.simulation.make_wound_check") as mock_wc:
@@ -2816,7 +2848,7 @@ class TestDoubleAttack:
                 dice_rolled=[10, 8, 5], dice_kept=[10, 8], dice_pool="7k2",
             )
             mock_wc.return_value = (True, 30, [15, 10, 5], [15, 10])
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["MiruAtk"], fighters["Defender"],
                 "MiruAtk", "Defender", fighters, actions_remaining, void_points,
             )
@@ -2931,14 +2963,11 @@ class TestTempVoidSeparation:
         void_points = {"A": 2, "B": 3}
         temp_void = {"A": 1, "B": 0}
         dan_points = {"A": 0, "B": 0}
-        snap = _snapshot_status(
-            log,
-            fighters,
-            actions_remaining,
-            void_points,
-            dan_points,
-            temp_void,
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void,
         )
+        snap = state.snapshot_status()
         assert snap["A"].temp_void_points == 1
         assert snap["B"].temp_void_points == 0
         assert snap["A"].void_points == 2
@@ -2965,7 +2994,14 @@ class TestTempVoidSeparation:
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
              patch("src.engine.simulation.roll_damage") as mock_dmg, \
-             patch("src.engine.simulation._should_spend_void_on_combat_roll", return_value=0), \
+             patch(
+                 "src.engine.simulation_utils.should_spend_void_on_combat_roll",
+                 return_value=0,
+             ), \
+             patch(
+                 "src.engine.fighters.mirumoto.should_spend_void_on_combat_roll",
+                 return_value=0,
+             ), \
              patch("src.engine.simulation._should_spend_void_on_wound_check") as mock_wc_decide, \
              patch("src.engine.simulation.make_wound_check") as mock_wc:
             from src.models.combat import CombatAction
@@ -2984,7 +3020,7 @@ class TestTempVoidSeparation:
             mock_wc_decide.return_value = 1
             mock_wc.return_value = (True, 20, [12, 8, 5], [12, 8])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["MiruDef"],
                 "Attacker", "MiruDef", fighters, actions_remaining, void_points,
                 temp_void=temp_void,
@@ -3016,8 +3052,12 @@ class TestAttackVoidFix:
         # Enough void that AI decides to spend
         void_points = {"MiruAtk": 3, "Defender": 2}
 
-        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
-             patch("src.engine.simulation._should_spend_void_on_combat_roll") as mock_void_decide, \
+        void_mock_target = (
+            "src.engine.fighters.mirumoto"
+            ".should_spend_void_on_combat_roll"
+        )
+        with patch("src.engine.fighters.mirumoto._should_use_double_attack") as mock_da, \
+             patch(void_mock_target) as mock_void_decide, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
              patch("src.engine.simulation.roll_damage") as mock_dmg, \
              patch("src.engine.simulation.make_wound_check") as mock_wc:
@@ -3035,7 +3075,7 @@ class TestAttackVoidFix:
             )
             mock_wc.return_value = (True, 25, [15, 10], [15, 10])
 
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["MiruAtk"], fighters["Defender"],
                 "MiruAtk", "Defender", fighters, actions_remaining, void_points,
             )
@@ -3078,7 +3118,7 @@ class TestTempVoidDisplay:
             )
             # Parry fails — still gets temp void annotation
             mock_rak.return_value = ([8, 5, 3], [8, 5], 13)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["MiruDef"],
                 "Attacker", "MiruDef", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3114,7 +3154,7 @@ class TestTempVoidDisplay:
             )
             # Parry succeeds
             mock_rak.return_value = ([15, 12, 8], [15, 12, 8], 35)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["MiruDef"],
                 "Attacker", "MiruDef", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3151,7 +3191,7 @@ class TestTempVoidDisplay:
                 total=12, tn=15, success=False,
                 description="WM attacks: 5k2 vs TN 15",
             )
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["WM"], fighters["MiruDef"],
                 "WM", "MiruDef", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3235,7 +3275,7 @@ class TestPhaseShiftParry:
                 total=20, tn=20, success=True, description="Attacker attacks",
             )
             mock_rak.return_value = ([15, 12, 8], [15, 12, 8], 35)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["M3Def"],
                 "Attacker", "M3Def", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3288,7 +3328,7 @@ class TestPhaseShiftParry:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_interrupt_parry") as mock_int:
+             patch("src.engine.simulation_utils.should_interrupt_parry") as mock_int:
             from src.models.combat import CombatAction
             mock_attack.return_value = CombatAction(
                 phase=5, actor="Attacker", action_type=ActionType.ATTACK,
@@ -3296,7 +3336,7 @@ class TestPhaseShiftParry:
                 total=20, tn=20, success=True, description="Attacker attacks",
             )
             mock_rak.return_value = ([15, 12, 8], [15, 12, 8], 35)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["M3Def"],
                 "Attacker", "M3Def", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3333,7 +3373,7 @@ class TestPhaseShiftParry:
                 total=20, tn=20, success=True, description="Attacker attacks",
             )
             mock_rak.return_value = ([8, 5, 3], [8, 5], 13)  # Parry fails
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["M3Def"],
                 "Attacker", "M3Def", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3369,7 +3409,7 @@ class TestPhaseShiftParry:
                 total=20, tn=20, success=True, description="Attacker attacks",
             )
             mock_rak.return_value = ([15, 12, 8], [15, 12, 8], 35)  # Parry succeeds
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["M3Def"],
                 "Attacker", "M3Def", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3402,11 +3442,11 @@ class TestDanRollBonus:
         void_points = {"M3Atk": 0, "Def": 2}
         dan_points = {"M3Atk": 8, "Def": 0}
 
-        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+        with patch("src.engine.fighters.mirumoto._should_use_double_attack") as mock_da, \
              patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_damage") as mock_dmg, \
              patch("src.engine.simulation.make_wound_check") as mock_wc, \
-             patch("src.engine.simulation._should_interrupt_parry", return_value=False):
+             patch("src.engine.simulation_utils.should_interrupt_parry", return_value=False):
             from src.models.combat import CombatAction
             mock_da.return_value = (False, 0)
             # Attack misses by 3: total=12, tn=15 (Def has Parry 2)
@@ -3422,7 +3462,7 @@ class TestDanRollBonus:
                 dice_rolled=[10], dice_kept=[10], dice_pool="7k2",
             )
             mock_wc.return_value = (True, 20, [15, 10], [15, 10])
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["M3Atk"], fighters["Def"],
                 "M3Atk", "Def", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3454,7 +3494,7 @@ class TestDanRollBonus:
 
         with patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_and_keep") as mock_rak, \
-             patch("src.engine.simulation._should_predeclare_parry", return_value=False):
+             patch("src.engine.simulation_utils.should_predeclare_parry", return_value=False):
             from src.models.combat import CombatAction
             # Attack total=25, parry TN = 25
             mock_attack.return_value = CombatAction(
@@ -3464,7 +3504,7 @@ class TestDanRollBonus:
             )
             # Parry roll=17, +5 2nd dan = 22 < 25 → short by 3 → need ceil(3/2)=2 pts
             mock_rak.return_value = ([10, 7, 5, 3], [10, 7], 17)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Attacker"], fighters["M3Def"],
                 "Attacker", "M3Def", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3508,11 +3548,11 @@ class TestDanRollBonus:
         void_points = {"M3Atk": 0, "Def": 2}
         dan_points = {"M3Atk": 8, "Def": 0}
 
-        with patch("src.engine.simulation._should_use_double_attack") as mock_da, \
+        with patch("src.engine.fighters.mirumoto._should_use_double_attack") as mock_da, \
              patch("src.engine.simulation.roll_attack") as mock_attack, \
              patch("src.engine.simulation.roll_damage") as mock_dmg, \
              patch("src.engine.simulation.make_wound_check") as mock_wc, \
-             patch("src.engine.simulation._should_interrupt_parry", return_value=False):
+             patch("src.engine.simulation_utils.should_interrupt_parry", return_value=False):
             from src.models.combat import CombatAction
             mock_da.return_value = (False, 0)
             mock_attack.return_value = CombatAction(
@@ -3527,7 +3567,7 @@ class TestDanRollBonus:
                 dice_rolled=[10], dice_kept=[10], dice_pool="7k2",
             )
             mock_wc.return_value = (True, 20, [15, 10], [15, 10])
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["M3Atk"], fighters["Def"],
                 "M3Atk", "Def", fighters, actions_remaining, void_points,
                 dan_points=dan_points,
@@ -3664,9 +3704,9 @@ class TestMatsuFirstDan:
         void_points = {"Matsu": 0, "Target": 2}
 
         # Force DA choice by mocking
-        with patch("src.engine.simulation._matsu_attack_choice") as mock_choice:
+        with patch("src.engine.fighters.matsu._matsu_attack_choice") as mock_choice:
             mock_choice.return_value = ("double_attack", 0)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Matsu"], fighters["Target"],
                 "Matsu", "Target", fighters, actions_remaining, void_points,
             )
@@ -3714,9 +3754,9 @@ class TestMatsuThirdDan:
         void_points = {"Matsu": 3, "Target": 2}
         matsu_bonuses: dict[str, list[int]] = {"Matsu": [], "Target": []}
 
-        with patch("src.engine.simulation._matsu_attack_choice") as mock_choice:
+        with patch("src.engine.fighters.matsu._matsu_attack_choice") as mock_choice:
             mock_choice.return_value = ("lunge", 1)  # Spend 1 void
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Matsu"], fighters["Target"],
                 "Matsu", "Target", fighters, actions_remaining, void_points,
                 matsu_bonuses=matsu_bonuses,
@@ -3760,12 +3800,12 @@ class TestMatsuFourthDan:
         void_points = {"Matsu": 0, "Target": 2}
 
         # Mock roll_and_keep to return exactly TN-15 (near miss)
-        with patch("src.engine.simulation._matsu_attack_choice") as mock_choice, \
+        with patch("src.engine.fighters.matsu._matsu_attack_choice") as mock_choice, \
              patch("src.engine.simulation.roll_and_keep") as mock_roll:
             mock_choice.return_value = ("double_attack", 0)
             # TN = 5 + 5*0 + 20 = 25 for parry 0. Return 10 (misses by 15, within 20)
             mock_roll.return_value = ([5, 3, 2], [5, 3, 2], 10)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Matsu"], fighters["Target"],
                 "Matsu", "Target", fighters, actions_remaining, void_points,
             )
@@ -3786,12 +3826,12 @@ class TestMatsuFourthDan:
         actions_remaining = {"Matsu": [5], "Target": [3, 7]}
         void_points = {"Matsu": 0, "Target": 2}
 
-        with patch("src.engine.simulation._matsu_attack_choice") as mock_choice, \
+        with patch("src.engine.fighters.matsu._matsu_attack_choice") as mock_choice, \
              patch("src.engine.simulation.roll_and_keep") as mock_roll:
             mock_choice.return_value = ("double_attack", 0)
             # TN = 25. Return 4 (misses by 21, >= 20)
             mock_roll.return_value = ([2, 1, 1], [2, 1, 1], 4)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Matsu"], fighters["Target"],
                 "Matsu", "Target", fighters, actions_remaining, void_points,
             )
@@ -3811,12 +3851,12 @@ class TestMatsuFourthDan:
         actions_remaining = {"Matsu": [5], "Target": [3, 7]}
         void_points = {"Matsu": 0, "Target": 2}
 
-        with patch("src.engine.simulation._matsu_attack_choice") as mock_choice, \
+        with patch("src.engine.fighters.matsu._matsu_attack_choice") as mock_choice, \
              patch("src.engine.simulation.roll_and_keep") as mock_roll:
             mock_choice.return_value = ("double_attack", 0)
             # TN = 25. Return 10 (near miss by 15)
             mock_roll.return_value = ([5, 3, 2], [5, 3, 2], 10)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Matsu"], fighters["Target"],
                 "Matsu", "Target", fighters, actions_remaining, void_points,
             )
@@ -3867,14 +3907,14 @@ class TestMatsuFifthDan:
         void_points = {"Matsu": 0, "Target": 0}
 
         # Mock so lunge hits and wound check fails
-        with patch("src.engine.simulation._matsu_attack_choice") as mock_choice, \
+        with patch("src.engine.fighters.matsu._matsu_attack_choice") as mock_choice, \
              patch("src.engine.simulation.roll_and_keep") as mock_roll, \
              patch("src.engine.simulation.make_wound_check") as mock_wc:
             mock_choice.return_value = ("lunge", 0)
             mock_roll.return_value = ([10, 8, 7, 6], [10, 8, 7], 25)
             # Mock wound check to fail
             mock_wc.return_value = (False, 5, [3, 2, 1], [3, 2])
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Matsu"], fighters["Target"],
                 "Matsu", "Target", fighters, actions_remaining, void_points,
             )
@@ -3945,9 +3985,9 @@ class TestLunge:
         actions_remaining = {"Matsu": [5], "Target": [3, 7]}
         void_points = {"Matsu": 0, "Target": 2}
 
-        with patch("src.engine.simulation._matsu_attack_choice") as mock_choice:
+        with patch("src.engine.fighters.matsu._matsu_attack_choice") as mock_choice:
             mock_choice.return_value = ("lunge", 0)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Matsu"], fighters["Target"],
                 "Matsu", "Target", fighters, actions_remaining, void_points,
             )
@@ -3971,12 +4011,12 @@ class TestLunge:
         actions_remaining = {"Matsu": [5], "Target": []}
         void_points = {"Matsu": 0, "Target": 0}
 
-        with patch("src.engine.simulation._matsu_attack_choice") as mock_choice, \
+        with patch("src.engine.fighters.matsu._matsu_attack_choice") as mock_choice, \
              patch("src.engine.simulation.roll_and_keep") as mock_roll:
             mock_choice.return_value = ("lunge", 0)
             # Lunge hits with total = 24 vs TN 5
             mock_roll.return_value = ([9, 8, 7, 6, 5, 4], [9, 8, 7], 24)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Matsu"], fighters["Target"],
                 "Matsu", "Target", fighters, actions_remaining, void_points,
             )
@@ -4004,9 +4044,9 @@ class TestLunge:
         void_points = {"Matsu": 0, "Target": 0}
         lunge_target_bonus: dict[str, int] = {"Matsu": 0, "Target": 0}
 
-        with patch("src.engine.simulation._matsu_attack_choice") as mock_choice:
+        with patch("src.engine.fighters.matsu._matsu_attack_choice") as mock_choice:
             mock_choice.return_value = ("lunge", 0)
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 3, fighters["Matsu"], fighters["Target"],
                 "Matsu", "Target", fighters, actions_remaining, void_points,
                 lunge_target_bonus=lunge_target_bonus,
@@ -4127,6 +4167,85 @@ def _make_kakita(
     )
 
 
+def _make_state_from_dicts(
+    log,
+    fighters: dict[str, dict],
+    actions_remaining: dict[str, list[int]],
+    void_points: dict[str, int],
+    dan_points: dict[str, int] | None = None,
+    temp_void: dict[str, int] | None = None,
+    matsu_bonuses: dict[str, list[int]] | None = None,
+    shinjo_bonuses: dict[str, list[int]] | None = None,
+    lunge_target_bonus: dict[str, int] | None = None,
+) -> CombatState:
+    """Build CombatState from dict-based test fixtures."""
+    from src.engine.fighters import create_fighter
+
+    state = CombatState(log=log)
+    for name, info in fighters.items():
+        create_fighter(
+            name, state,
+            char=info["char"],
+            weapon=info["weapon"],
+            actions_remaining=actions_remaining[name],
+            void_points=void_points.get(name, 0),
+            dan_points=(dan_points or {}).get(name, 0),
+            temp_void=(temp_void or {}).get(name, 0),
+            matsu_bonuses=(matsu_bonuses or {}).get(name, []),
+            shinjo_bonuses=(shinjo_bonuses or {}).get(name, []),
+            lunge_target_bonus=(lunge_target_bonus or {}).get(name, 0),
+        )
+    return state
+
+
+def _resolve_attack_compat(
+    log,
+    phase: int,
+    attacker_info: dict,
+    defender_info: dict,
+    attacker_name: str,
+    defender_name: str,
+    fighters: dict[str, dict],
+    actions_remaining: dict[str, list[int]],
+    void_points: dict[str, int],
+    dan_points: dict[str, int] | None = None,
+    temp_void: dict[str, int] | None = None,
+    matsu_bonuses: dict[str, list[int]] | None = None,
+    lunge_target_bonus: dict[str, int] | None = None,
+    shinjo_bonuses: dict[str, list[int]] | None = None,
+    shinjo_die_value: int | None = None,
+) -> None:
+    """Test helper: builds CombatState from dict params, calls _resolve_attack."""
+    if dan_points is None:
+        dan_points = {attacker_name: 0, defender_name: 0}
+    if temp_void is None:
+        temp_void = {attacker_name: 0, defender_name: 0}
+    if lunge_target_bonus is None:
+        lunge_target_bonus = {attacker_name: 0, defender_name: 0}
+
+    state = _make_state_from_dicts(
+        log, fighters, actions_remaining, void_points,
+        dan_points=dan_points, temp_void=temp_void,
+        matsu_bonuses=matsu_bonuses, shinjo_bonuses=shinjo_bonuses,
+        lunge_target_bonus=lunge_target_bonus,
+    )
+    atk_fighter = state.fighters[attacker_name]
+    def_fighter = state.fighters[defender_name]
+
+    if shinjo_die_value is not None:
+        atk_fighter.set_pending_die(shinjo_die_value)
+
+    _resolve_attack(state, atk_fighter, def_fighter, phase)
+
+    # Sync CombatState back to dict params for test assertions
+    for name_key in [attacker_name, defender_name]:
+        f = state.fighters[name_key]
+        void_points[name_key] = f.void_points
+        temp_void[name_key] = f.temp_void
+        dan_points[name_key] = f.dan_points
+        lunge_target_bonus[name_key] = f.lunge_target_bonus
+
+
 class TestKakitaSA:
     """Kakita SA: initiative 10s become phase 0, kept dice = Void ring."""
 
@@ -4244,9 +4363,9 @@ class TestKakitaFirstDan:
         actions_remaining = {"Kakita": [5], "Target": [3, 7]}
         void_points = {"Kakita": 0, "Target": 2}
 
-        with patch("src.engine.simulation._kakita_attack_choice") as mock_choice:
+        with patch("src.engine.fighters.kakita._kakita_attack_choice") as mock_choice:
             mock_choice.return_value = "double_attack"
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 5, fighters["Kakita"], fighters["Target"],
                 "Kakita", "Target", fighters, actions_remaining, void_points,
             )
@@ -4289,11 +4408,13 @@ class TestKakitaSecondDan:
         matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
         lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
 
-        from src.engine.simulation import _resolve_kakita_phase0_attack
-        _resolve_kakita_phase0_attack(
-            log, "Kakita", "Target", fighters, actions_remaining,
-            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        from src.engine.fighters.kakita import _resolve_kakita_phase0_attack
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void, matsu_bonuses=matsu_bonuses,
+            lunge_target_bonus=lunge_target_bonus,
         )
+        _resolve_kakita_phase0_attack(state, "Kakita", "Target")
 
         iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
         assert len(iai_actions) == 1
@@ -4320,9 +4441,9 @@ class TestKakitaThirdDan:
         actions_remaining = {"Kakita": [2], "Target": [7]}
         void_points = {"Kakita": 0, "Target": 2}
 
-        with patch("src.engine.simulation._kakita_attack_choice") as mock_choice:
+        with patch("src.engine.fighters.kakita._kakita_attack_choice") as mock_choice:
             mock_choice.return_value = "lunge"
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 2, fighters["Kakita"], fighters["Target"],
                 "Kakita", "Target", fighters, actions_remaining, void_points,
             )
@@ -4349,9 +4470,9 @@ class TestKakitaThirdDan:
         actions_remaining = {"Kakita": [3], "Target": []}
         void_points = {"Kakita": 0, "Target": 0}
 
-        with patch("src.engine.simulation._kakita_attack_choice") as mock_choice:
+        with patch("src.engine.fighters.kakita._kakita_attack_choice") as mock_choice:
             mock_choice.return_value = "lunge"
-            _resolve_attack(
+            _resolve_attack_compat(
                 log, 3, fighters["Kakita"], fighters["Target"],
                 "Kakita", "Target", fighters, actions_remaining, void_points,
             )
@@ -4394,11 +4515,13 @@ class TestKakitaFourthDan:
         matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
         lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
 
-        from src.engine.simulation import _resolve_kakita_phase0_attack
-        _resolve_kakita_phase0_attack(
-            log, "Kakita", "Target", fighters, actions_remaining,
-            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        from src.engine.fighters.kakita import _resolve_kakita_phase0_attack
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void, matsu_bonuses=matsu_bonuses,
+            lunge_target_bonus=lunge_target_bonus,
         )
+        _resolve_kakita_phase0_attack(state, "Kakita", "Target")
 
         iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
         if iai_actions and iai_actions[0].success:
@@ -4461,17 +4584,18 @@ class TestKakitaFifthDan:
         temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
         matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
 
-        from src.engine.simulation import _resolve_kakita_5th_dan
-        with patch("src.engine.simulation.roll_and_keep") as mock_roll:
+        from src.engine.fighters.kakita import _resolve_kakita_5th_dan
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void, matsu_bonuses=matsu_bonuses,
+        )
+        with patch("src.engine.fighters.kakita.roll_and_keep") as mock_roll:
             mock_roll.side_effect = [
                 ([10, 8, 7, 5, 4, 3, 2, 1, 1, 1, 1], [10, 8, 7, 5, 4], 30),  # Kakita
                 ([5, 3, 2], [5, 3], 8),  # Opponent: attack 3 + fire 2 = 5k2
                 ([8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 1, 1], [8, 7], 15),  # Damage
             ]
-            _resolve_kakita_5th_dan(
-                log, "Kakita", "Target", fighters, actions_remaining,
-                void_points, dan_points, temp_void, matsu_bonuses,
-            )
+            _resolve_kakita_5th_dan(state, "Kakita", "Target")
 
         iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
         assert len(iai_actions) == 1
@@ -4525,8 +4649,12 @@ class TestKakitaFifthDan:
         temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
         matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
 
-        from src.engine.simulation import _resolve_kakita_5th_dan
-        with patch("src.engine.simulation.roll_and_keep") as mock_roll:
+        from src.engine.fighters.kakita import _resolve_kakita_5th_dan
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void, matsu_bonuses=matsu_bonuses,
+        )
+        with patch("src.engine.fighters.kakita.roll_and_keep") as mock_roll:
             # Kakita rolls 30, opponent rolls 10, margin = 20 -> 4 extra dice
             mock_roll.side_effect = [
                 # Kakita roll (after +5 2nd dan = 35)
@@ -4534,10 +4662,7 @@ class TestKakitaFifthDan:
                 ([5, 3, 2], [5, 3, 2], 10),  # Opponent roll
                 ([8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 1, 1], [8, 7], 15),  # Damage roll
             ]
-            _resolve_kakita_5th_dan(
-                log, "Kakita", "Target", fighters, actions_remaining,
-                void_points, dan_points, temp_void, matsu_bonuses,
-            )
+            _resolve_kakita_5th_dan(state, "Kakita", "Target")
 
         iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
         assert len(iai_actions) == 1
@@ -4572,8 +4697,12 @@ class TestKakitaFifthDan:
         temp_void: dict[str, int] = {"Kakita": 0, "Target": 0}
         matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
 
-        from src.engine.simulation import _resolve_kakita_5th_dan
-        with patch("src.engine.simulation.roll_and_keep") as mock_roll:
+        from src.engine.fighters.kakita import _resolve_kakita_5th_dan
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void, matsu_bonuses=matsu_bonuses,
+        )
+        with patch("src.engine.fighters.kakita.roll_and_keep") as mock_roll:
             # Kakita rolls 10, opponent rolls 30, margin = -15 (after +5 2nd dan, kakita=15,
             # margin=-15)
             # fewer_dice = min(4-1, 15//5) = min(3, 3) = 3
@@ -4584,10 +4713,7 @@ class TestKakitaFifthDan:
                 ([10, 9, 8, 7, 6, 5, 4, 3, 2], [10, 9, 8, 7], 30),
                 ([6, 5, 4, 3, 2, 1], [6, 5], 11),  # Damage roll (reduced)
             ]
-            _resolve_kakita_5th_dan(
-                log, "Kakita", "Target", fighters, actions_remaining,
-                void_points, dan_points, temp_void, matsu_bonuses,
-            )
+            _resolve_kakita_5th_dan(state, "Kakita", "Target")
 
         iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
         assert len(iai_actions) == 1
@@ -4626,11 +4752,13 @@ class TestKakitaPhase0Attack:
         matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
         lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
 
-        from src.engine.simulation import _resolve_kakita_phase0_attack
-        _resolve_kakita_phase0_attack(
-            log, "Kakita", "Target", fighters, actions_remaining,
-            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        from src.engine.fighters.kakita import _resolve_kakita_phase0_attack
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void, matsu_bonuses=matsu_bonuses,
+            lunge_target_bonus=lunge_target_bonus,
         )
+        _resolve_kakita_phase0_attack(state, "Kakita", "Target")
 
         # Started with [0, 3, 7], consumed only the 0 -> [3, 7] remaining
         assert actions_remaining["Kakita"] == [3, 7]
@@ -4664,11 +4792,13 @@ class TestKakitaPhase0Attack:
         matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
         lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
 
-        from src.engine.simulation import _resolve_kakita_phase0_attack
-        _resolve_kakita_phase0_attack(
-            log, "Kakita", "Target", fighters, actions_remaining,
-            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        from src.engine.fighters.kakita import _resolve_kakita_phase0_attack
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void, matsu_bonuses=matsu_bonuses,
+            lunge_target_bonus=lunge_target_bonus,
         )
+        _resolve_kakita_phase0_attack(state, "Kakita", "Target")
 
         # Started with [2, 5, 8], consumed 2 highest (8, 5) -> [2] remaining
         assert actions_remaining["Kakita"] == [2]
@@ -4702,11 +4832,13 @@ class TestKakitaPhase0Attack:
         matsu_bonuses: dict[str, list[int]] = {"Kakita": [], "Target": []}
         lunge_target_bonus: dict[str, int] = {"Kakita": 0, "Target": 0}
 
-        from src.engine.simulation import _resolve_kakita_phase0_attack
-        _resolve_kakita_phase0_attack(
-            log, "Kakita", "Target", fighters, actions_remaining,
-            void_points, dan_points, temp_void, matsu_bonuses, lunge_target_bonus,
+        from src.engine.fighters.kakita import _resolve_kakita_phase0_attack
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void, matsu_bonuses=matsu_bonuses,
+            lunge_target_bonus=lunge_target_bonus,
         )
+        _resolve_kakita_phase0_attack(state, "Kakita", "Target")
 
         iai_actions = [act for act in log.actions if act.action_type == ActionType.IAIJUTSU]
         assert len(iai_actions) == 1
@@ -5118,28 +5250,28 @@ class TestReactiveParry:
 
     def test_default_parries_with_overflow_dice(self) -> None:
         """Default characters parry when attack has overflow dice."""
-        from src.engine.simulation import _should_reactive_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # attack_total=25, tn=15 → extra_dice=2, damage_rolled=4+3+2=9
         assert _should_reactive_parry(3, 3, 25, 15, 4, 3, 0, 3, False)
 
     def test_default_parries_when_near_cripple(self) -> None:
         """Default characters parry when near cripple (wounds_to_cripple <= 1)."""
-        from src.engine.simulation import _should_reactive_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # serious=2, earth=3 → wounds_to_cripple=1; no extra dice
         assert _should_reactive_parry(3, 3, 15, 15, 4, 3, 2, 3, False)
 
     def test_default_parries_with_good_odds(self) -> None:
         """Default characters parry when expected parry total >= 60% of attack."""
-        from src.engine.simulation import _should_reactive_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # air=4 → expected_parry=22; attack_total=30 → 22 >= 18 → True
         assert _should_reactive_parry(3, 4, 30, 30, 4, 3, 0, 3, False)
 
     def test_default_skips_low_chance_low_damage(self) -> None:
         """Default characters skip parry when odds are poor and damage is minimal."""
-        from src.engine.simulation import _should_reactive_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # parry=1, air=2 → 3k2, expected≈12.5; attack=25 → 12.5 < 15 → low odds
         # no extra dice, not near cripple (serious=0, earth=3)
@@ -5147,28 +5279,29 @@ class TestReactiveParry:
 
     def test_mirumoto_always_parries(self) -> None:
         """Mirumoto always attempts reactive parry (temp void gain)."""
-        from src.engine.simulation import _should_reactive_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # Even with terrible odds, Mirumoto parries for temp void
         assert _should_reactive_parry(1, 2, 50, 50, 4, 3, 0, 3, False, is_mirumoto=True)
 
     def test_kakita_skips_moderate_damage(self) -> None:
         """Kakita skips reactive parry for moderate damage."""
-        from src.engine.simulation import _should_reactive_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # damage_rolled = 4 + 3 + 2 = 9, not > 12
         assert not _should_reactive_parry(3, 3, 25, 15, 4, 3, 0, 3, False, is_kakita=True)
 
     def test_kakita_parries_high_damage(self) -> None:
         """Kakita reactive-parries when damage_rolled > 12."""
-        from src.engine.simulation import _should_reactive_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # damage_rolled = 4 + 3 + 6 = 13 > 12
         assert _should_reactive_parry(3, 3, 45, 15, 4, 3, 0, 3, False, is_kakita=True)
 
     def test_reactive_threshold_lower_than_interrupt(self) -> None:
         """Reactive parry triggers at lower damage than interrupt parry for same school."""
-        from src.engine.simulation import _should_interrupt_parry, _should_reactive_parry
+        from src.engine.simulation_utils import should_interrupt_parry as _should_interrupt_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # damage_rolled = 4 + 3 + 4 = 11 > 10 → default interrupts
         assert _should_interrupt_parry(3, 3, 35, 15, 4, 3, 4, 0, 3)
@@ -5186,28 +5319,28 @@ class TestInterruptParryDecision:
 
     def test_default_catastrophic_overflow(self) -> None:
         """Default characters interrupt-parry on catastrophic damage overflow."""
-        from src.engine.simulation import _should_interrupt_parry
+        from src.engine.simulation_utils import should_interrupt_parry as _should_interrupt_parry
 
         # damage_rolled = 4 + 3 + 4 = 11 > 10
         assert _should_interrupt_parry(3, 3, 35, 15, 4, 3, 4, 0, 3)
 
     def test_default_near_cripple(self) -> None:
         """Default characters interrupt when near cripple with extra dice."""
-        from src.engine.simulation import _should_interrupt_parry
+        from src.engine.simulation_utils import should_interrupt_parry as _should_interrupt_parry
 
         # wounds_to_cripple=1, extra_dice=2
         assert _should_interrupt_parry(3, 3, 25, 15, 4, 3, 4, 2, 3)
 
     def test_default_no_interrupt_moderate(self) -> None:
         """Default characters don't interrupt for moderate damage."""
-        from src.engine.simulation import _should_interrupt_parry
+        from src.engine.simulation_utils import should_interrupt_parry as _should_interrupt_parry
 
         # damage_rolled = 4 + 3 + 2 = 9, not > 10; wounds_to_cripple=3
         assert not _should_interrupt_parry(3, 3, 25, 15, 4, 3, 4, 0, 3)
 
     def test_mirumoto_slightly_more_willing(self) -> None:
         """Mirumoto interrupts at slightly lower threshold (temp void)."""
-        from src.engine.simulation import _should_interrupt_parry
+        from src.engine.simulation_utils import should_interrupt_parry as _should_interrupt_parry
 
         # damage_rolled = 4 + 3 + 3 = 10 > 9 → Mirumoto triggers, default doesn't
         assert _should_interrupt_parry(3, 3, 30, 15, 4, 3, 4, 0, 3, is_mirumoto=True)
@@ -5215,7 +5348,7 @@ class TestInterruptParryDecision:
 
     def test_kakita_only_massive(self) -> None:
         """Kakita only interrupt-parries massive damage (>15 rolled)."""
-        from src.engine.simulation import _should_interrupt_parry
+        from src.engine.simulation_utils import should_interrupt_parry as _should_interrupt_parry
 
         # damage_rolled = 4 + 3 + 4 = 11, not > 15
         assert not _should_interrupt_parry(3, 3, 35, 15, 4, 3, 4, 0, 3, is_kakita=True)
@@ -5224,13 +5357,14 @@ class TestInterruptParryDecision:
 
     def test_requires_2_dice(self) -> None:
         """Interrupt parry requires at least 2 remaining dice."""
-        from src.engine.simulation import _should_interrupt_parry
+        from src.engine.simulation_utils import should_interrupt_parry as _should_interrupt_parry
 
         assert not _should_interrupt_parry(3, 3, 50, 15, 4, 3, 1, 0, 3)
 
     def test_interrupt_threshold_higher_than_reactive(self) -> None:
         """Interrupt threshold is strictly higher than reactive for the same inputs."""
-        from src.engine.simulation import _should_interrupt_parry, _should_reactive_parry
+        from src.engine.simulation_utils import should_interrupt_parry as _should_interrupt_parry
+        from src.engine.simulation_utils import should_reactive_parry as _should_reactive_parry
 
         # Cases where reactive triggers but interrupt does not
         # damage_rolled = 4 + 3 + 1 = 8; extra_dice=1
@@ -5248,21 +5382,21 @@ class TestPredeclareParry:
 
     def test_kakita_never_predeclares(self) -> None:
         """Kakita Duelists never pre-declare parries."""
-        from src.engine.simulation import _should_predeclare_parry
+        from src.engine.simulation_utils import should_predeclare_parry as _should_predeclare_parry
 
         assert not _should_predeclare_parry(5, 4, 50, False, is_kakita=True)
         assert not _should_predeclare_parry(5, 4, 100, False, is_kakita=True)
 
     def test_non_kakita_predeclares_when_expected_low(self) -> None:
         """Non-Kakita predeclares when expected parry < attack TN."""
-        from src.engine.simulation import _should_predeclare_parry
+        from src.engine.simulation_utils import should_predeclare_parry as _should_predeclare_parry
 
         # parry=2, air=2 → 4k2, expected≈14 < 25 → predeclare
         assert _should_predeclare_parry(2, 2, 25, False)
 
     def test_non_kakita_skips_when_expected_high(self) -> None:
         """Non-Kakita skips predeclare when expected parry >= attack TN."""
-        from src.engine.simulation import _should_predeclare_parry
+        from src.engine.simulation_utils import should_predeclare_parry as _should_predeclare_parry
 
         # parry=3, air=4 → 7k4, expected≈28 >= 15 → skip
         assert not _should_predeclare_parry(3, 4, 15, False)
@@ -5338,7 +5472,7 @@ class TestShinjoSA:
         void_points = {"Shinjo": 3, "Target": 2}
 
         # Phase 10 attack with die_value=3: SA bonus = 2*(10-3) = 14
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 10, fighters["Shinjo"], fighters["Target"],
             "Shinjo", "Target", fighters, actions_remaining, void_points,
             shinjo_die_value=3,
@@ -5365,7 +5499,7 @@ class TestShinjoSA:
         actions_remaining = {"Shinjo": [1], "Target": [5, 7]}
         void_points = {"Shinjo": 3, "Target": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 10, fighters["Shinjo"], fighters["Target"],
             "Shinjo", "Target", fighters, actions_remaining, void_points,
             shinjo_die_value=1,
@@ -5393,7 +5527,7 @@ class TestShinjoHoldAction:
         actions_remaining = {"Shinjo": [5], "Target": [3, 7]}
         void_points = {"Shinjo": 2, "Target": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Shinjo"], fighters["Target"],
             "Shinjo", "Target", fighters, actions_remaining, void_points,
         )
@@ -5447,7 +5581,7 @@ class TestShinjoFirstDan:
         actions_remaining = {"Shinjo": [3], "Target": [5, 7]}
         void_points = {"Shinjo": 3, "Target": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 10, fighters["Shinjo"], fighters["Target"],
             "Shinjo", "Target", fighters, actions_remaining, void_points,
             shinjo_die_value=3,
@@ -5472,7 +5606,7 @@ class TestShinjoFirstDan:
         actions_remaining = {"Attacker": [5], "Shinjo": [3, 5, 7]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining, void_points,
         )
@@ -5500,7 +5634,7 @@ class TestShinjoSecondDan:
         actions_remaining = {"Attacker": [5], "Shinjo": [3, 5, 7]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining, void_points,
         )
@@ -5535,7 +5669,7 @@ class TestShinjoThirdDan:
         actions_remaining = {"Attacker": [5], "Shinjo": [3, 6, 8]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining, void_points,
         )
@@ -5568,7 +5702,7 @@ class TestShinjoThirdDan:
         actions_remaining = {"Attacker": [5], "Shinjo": [2, 3, 5]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining, void_points,
         )
@@ -5768,7 +5902,7 @@ class TestShinjoParryDecision:
         actions_remaining = {"Attacker": [5], "Shinjo": [3, 5, 7]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining, void_points,
         )
@@ -5801,7 +5935,7 @@ class TestShinjoParryDecision:
         actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining, void_points,
         )
@@ -5832,7 +5966,7 @@ class TestShinjoParryDecision:
         actions_remaining = {"Attacker": [5], "Shinjo": [5]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining, void_points,
         )
@@ -5857,7 +5991,7 @@ class TestShinjoParryDecision:
         actions_remaining = {"Attacker": [3], "Shinjo": [5, 7, 9]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 3, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining, void_points,
         )
@@ -5879,7 +6013,7 @@ class TestShinjoParryDecision:
         actions_remaining = {"Attacker": [7], "Shinjo": [2, 5, 7, 9]}
         void_points = {"Attacker": 3, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 7, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining, void_points,
         )
@@ -5935,7 +6069,7 @@ class TestShinjoPredeclareParry:
         actions_remaining = {"Attacker": [5], "Shinjo": [5]}
         void_points = {"Attacker": 2, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining,
             void_points,
@@ -5965,7 +6099,7 @@ class TestShinjoPredeclareParry:
         actions_remaining = {"Attacker": [7], "Shinjo": [2, 5, 7, 9]}
         void_points = {"Attacker": 2, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 7, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining,
             void_points,
@@ -5997,12 +6131,14 @@ class TestShinjoPhase10Attack:
         temp_void: dict[str, int] = {"Shinjo": 0, "Target": 0}
         lunge_target_bonus: dict[str, int] = {"Shinjo": 0, "Target": 0}
 
-        from src.engine.simulation import _resolve_shinjo_phase10_attack
-        _resolve_shinjo_phase10_attack(
-            log, "Shinjo", "Target", fighters, actions_remaining,
-            void_points, dan_points, temp_void, matsu_bonuses,
-            shinjo_bonuses, lunge_target_bonus,
+        from src.engine.fighters.shinjo import _resolve_shinjo_phase10_attack
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void,
+            matsu_bonuses=matsu_bonuses, shinjo_bonuses=shinjo_bonuses,
+            lunge_target_bonus=lunge_target_bonus,
         )
+        _resolve_shinjo_phase10_attack(state, "Shinjo", "Target")
 
         # Die 2 should be consumed (lowest = max SA bonus of 2*(10-2)=16)
         assert 2 not in actions_remaining["Shinjo"]
@@ -6036,7 +6172,7 @@ class TestShinjoPhase10Attack:
         actions_remaining = {"Shinjo": [3], "Target": [5, 7]}
         void_points = {"Shinjo": 3, "Target": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 10, fighters["Shinjo"], fighters["Target"],
             "Shinjo", "Target", fighters, actions_remaining, void_points,
             shinjo_die_value=3,
@@ -6060,7 +6196,7 @@ class TestShinjoPhase10Attack:
         actions_remaining = {"Shinjo": [3], "Target": [5, 7]}
         void_points = {"Shinjo": 3, "Target": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 10, fighters["Shinjo"], fighters["Target"],
             "Shinjo", "Target", fighters, actions_remaining, void_points,
             shinjo_die_value=3,
@@ -6219,18 +6355,21 @@ class TestShinjoPhase10MultipleAttacks:
         temp_void: dict[str, int] = {"Shinjo": 0, "Target": 0}
         lunge_target_bonus: dict[str, int] = {"Shinjo": 0, "Target": 0}
 
-        from src.engine.simulation import _is_mortally_wounded, _resolve_shinjo_phase10_attack
+        from src.engine.fighters.shinjo import _resolve_shinjo_phase10_attack
+
+        state = _make_state_from_dicts(
+            log, fighters, actions_remaining, void_points,
+            dan_points=dan_points, temp_void=temp_void,
+            matsu_bonuses=matsu_bonuses, shinjo_bonuses=shinjo_bonuses,
+            lunge_target_bonus=lunge_target_bonus,
+        )
 
         attacks_made = 0
         while actions_remaining["Shinjo"]:
-            if _is_mortally_wounded(log, "Target"):
+            if log.wounds["Target"].is_mortally_wounded:
                 break
             dice_before = len(actions_remaining["Shinjo"])
-            _resolve_shinjo_phase10_attack(
-                log, "Shinjo", "Target", fighters, actions_remaining,
-                void_points, dan_points, temp_void, matsu_bonuses,
-                shinjo_bonuses, lunge_target_bonus,
-            )
+            _resolve_shinjo_phase10_attack(state, "Shinjo", "Target")
             attacks_made += 1
             if len(actions_remaining["Shinjo"]) >= dice_before:
                 break
@@ -6347,7 +6486,7 @@ class TestShinjoSkipPredeclareWithTwoDice:
         actions_remaining = {"Attacker": [5], "Shinjo": [3, 7]}
         void_points = {"Attacker": 2, "Shinjo": 2}
 
-        _resolve_attack(
+        _resolve_attack_compat(
             log, 5, fighters["Attacker"], fighters["Shinjo"],
             "Attacker", "Shinjo", fighters, actions_remaining,
             void_points,

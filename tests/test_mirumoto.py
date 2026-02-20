@@ -1,6 +1,6 @@
 """Tests for the Mirumoto Bushi school builder."""
 
-from src.engine.mirumoto import (
+from src.engine.character_builders.mirumoto import (
     build_mirumoto_from_xp,
     compute_mirumoto_stats_from_xp,
 )

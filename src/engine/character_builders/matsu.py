@@ -1,14 +1,14 @@
-"""Mirumoto Bushi school builder.
+"""Matsu Bushi school builder.
 
-Builds Mirumoto Bushi characters from earned XP. School ring is Void
+Builds Matsu Bushi characters from earned XP. School ring is Fire
 (starts at 3, max 6), other rings start at 2. School knacks
-(Counterattack, Double Attack, Iaijutsu) start at rank 1 for free.
-Fourth Dan grants a free Void +1 when all knacks reach 4.
+(Double Attack, Iaijutsu, Lunge) start at rank 1 for free.
+Fourth Dan grants a free Fire +1 when all knacks reach 4.
 """
 
 from __future__ import annotations
 
-from src.engine.xp_builder import (
+from src.engine.character_builders.xp_builder import (
     ComputedStats,
     advanced_skill_raise_cost,
     ring_raise_cost,
@@ -22,48 +22,48 @@ from src.models.character import (
     SkillType,
 )
 
-MIRUMOTO_KNACK_NAMES: list[str] = ["counterattack", "double_attack", "iaijutsu"]
+MATSU_KNACK_NAMES: list[str] = ["double_attack", "iaijutsu", "lunge"]
 
 # Each entry raises that stat by 1. Knack entries raise the named knack.
-# Ring priority: Void > Air > Water > Earth > Fire
-MIRUMOTO_COMBAT_PROGRESSION: list[str] = [
-    # Skills/knacks to 3 (before non-Void rings reach 3)
+# Ring priority: Fire > Void > Water > Earth > Air
+MATSU_COMBAT_PROGRESSION: list[str] = [
+    # Skills/knacks to 3 (before non-Fire rings reach 3)
     "parry",
     "attack", "parry",
-    "counterattack", "double_attack", "iaijutsu",  # 1→2
+    "double_attack", "iaijutsu", "lunge",  # 1->2
     "attack", "parry",
-    "counterattack", "double_attack", "iaijutsu",  # 2→3
+    "double_attack", "iaijutsu", "lunge",  # 2->3
 
-    # Rings first raise (Void 3→4, Air 2→3, Water 2→3, Earth 2→3, Fire 2→3)
-    "void", "air", "water", "earth", "fire",
+    # Rings first raise (Fire 3->4, Void 2->3, Water 2->3, Earth 2->3, Air 2->3)
+    "fire", "void", "water", "earth", "air",
 
-    # Skills/knacks to 4 (before non-Void rings reach 4)
+    # Skills/knacks to 4 (before non-Fire rings reach 4)
     "attack", "parry",
-    "counterattack", "double_attack", "iaijutsu",  # 3→4
+    "double_attack", "iaijutsu", "lunge",  # 3->4
 
-    # Rings second raise (Void 4→5, Air 3→4, etc.)
-    "void", "air", "water", "earth", "fire",
+    # Rings second raise (Fire 4->5, Void 3->4, etc.)
+    "fire", "void", "water", "earth", "air",
 
-    # Skills/knacks to 5 (before non-Void rings reach 5)
+    # Skills/knacks to 5 (before non-Fire rings reach 5)
     "attack", "parry",
-    "counterattack", "double_attack", "iaijutsu",  # 4→5
+    "double_attack", "iaijutsu", "lunge",  # 4->5
 
-    # Rings third raise (Void 5→6, Air 4→5, etc.)
-    "void", "air", "water", "earth", "fire",
+    # Rings third raise (Fire 5->6, Void 4->5, etc.)
+    "fire", "void", "water", "earth", "air",
 
     # Attack catch up
     "attack",
 ]
 
 
-def compute_mirumoto_stats_from_xp(
+def compute_matsu_stats_from_xp(
     earned_xp: int = 0,
     non_combat_pct: float = 0.20,
 ) -> ComputedStats:
-    """Compute ring values, skill ranks, and knack ranks for a Mirumoto Bushi.
+    """Compute ring values, skill ranks, and knack ranks for a Matsu Bushi.
 
-    School ring = Void (starts at 3, max 6); other rings start at 2, max 5.
-    School knacks start at 1. Fourth Dan grants a free Void +1.
+    School ring = Fire (starts at 3, max 6); other rings start at 2, max 5.
+    School knacks start at 1. Fourth Dan grants a free Fire +1.
 
     Args:
         earned_xp: XP earned beyond the base 150.
@@ -76,36 +76,36 @@ def compute_mirumoto_stats_from_xp(
     combat_xp = int(total_xp * (1 - non_combat_pct))
 
     ring_values: dict[str, int] = {
-        "air": 2, "fire": 2, "earth": 2, "water": 2, "void": 3,
+        "air": 2, "fire": 3, "earth": 2, "water": 2, "void": 2,
     }
 
     attack = 0
     parry = 0
-    knack_ranks: dict[str, int] = {k: 1 for k in MIRUMOTO_KNACK_NAMES}
+    knack_ranks: dict[str, int] = {k: 1 for k in MATSU_KNACK_NAMES}
     budget = combat_xp
 
-    # Track 4th Dan void boost
-    void_boosted = False
-    void_cost_discount = 0
+    # Track 4th Dan fire boost
+    fire_boosted = False
+    fire_cost_discount = 0
 
     def _check_4th_dan() -> None:
-        nonlocal void_boosted, void_cost_discount
-        if void_boosted:
+        nonlocal fire_boosted, fire_cost_discount
+        if fire_boosted:
             return
-        if all(knack_ranks[k] >= 4 for k in MIRUMOTO_KNACK_NAMES):
-            ring_values["void"] = min(ring_values["void"] + 1, 6)
-            void_boosted = True
-            void_cost_discount = 5
+        if all(knack_ranks[k] >= 4 for k in MATSU_KNACK_NAMES):
+            ring_values["fire"] = min(ring_values["fire"] + 1, 6)
+            fire_boosted = True
+            fire_cost_discount = 5
 
-    for entry in MIRUMOTO_COMBAT_PROGRESSION:
+    for entry in MATSU_COMBAT_PROGRESSION:
         if entry in ring_values:
             current = ring_values[entry]
-            max_val = 6 if entry == "void" else 5
+            max_val = 6 if entry == "fire" else 5
             if current >= max_val:
                 continue
             cost = ring_raise_cost(current + 1)
-            if entry == "void" and void_cost_discount > 0:
-                cost = max(0, cost - void_cost_discount)
+            if entry == "fire" and fire_cost_discount > 0:
+                cost = max(0, cost - fire_cost_discount)
             if cost > budget:
                 continue
             ring_values[entry] = current + 1
@@ -151,12 +151,12 @@ def compute_mirumoto_stats_from_xp(
     )
 
 
-def build_mirumoto_from_xp(
-    name: str = "Mirumoto",
+def build_matsu_from_xp(
+    name: str = "Matsu",
     earned_xp: int = 0,
     non_combat_pct: float = 0.20,
 ) -> Character:
-    """Build a Mirumoto Bushi character by spending XP.
+    """Build a Matsu Bushi character by spending XP.
 
     Args:
         name: Character name.
@@ -166,7 +166,7 @@ def build_mirumoto_from_xp(
     Returns:
         A fully constructed Character.
     """
-    stats = compute_mirumoto_stats_from_xp(
+    stats = compute_matsu_stats_from_xp(
         earned_xp=earned_xp,
         non_combat_pct=non_combat_pct,
     )
@@ -175,31 +175,9 @@ def build_mirumoto_from_xp(
     combat_xp = int(total_xp * (1 - non_combat_pct))
     non_combat_xp = total_xp - combat_xp
 
-    # Compute combat_spent from stats
     base_rings: dict[str, int] = {
-        "air": 2, "fire": 2, "earth": 2, "water": 2, "void": 3,
+        "air": 2, "fire": 3, "earth": 2, "water": 2, "void": 2,
     }
-
-    # Account for 4th Dan void boost: if all knacks >= 4, one Void raise was free
-    all_knacks_4 = all(stats.knack_ranks[k] >= 4 for k in MIRUMOTO_KNACK_NAMES)
-    void_boost_raises = 1 if all_knacks_4 else 0
-
-    ring_cost = 0
-    for r in stats.ring_values:
-        for v in range(base_rings[r] + 1, stats.ring_values[r] + 1):
-            ring_cost += ring_raise_cost(v)
-    # Subtract the cost of the free Void raise (4th Dan boost)
-    if void_boost_raises > 0 and stats.ring_values["void"] > base_rings["void"]:
-        # The free raise was applied, so discount the cost of the highest Void raise paid
-        # Actually: the boost added +1 for free, and then future raises got -5 discount
-        # Simpler: subtract 1 raise worth from paid Void raises
-        # The free raise value = one raise above what Void was before boosting
-        # We need to figure out paid vs free. Let's just subtract one full raise cost.
-        # The free raise went from X to X+1 for free. But we don't know X easily.
-        # Instead, subtract the discount: each Void raise after boost cost 5 less.
-        # Count Void raises after the boost in the progression.
-        # Simpler approach: recompute cost by replaying.
-        pass
 
     # Recompute cost by replaying the progression (most accurate)
     ring_cost = 0
@@ -207,20 +185,20 @@ def build_mirumoto_from_xp(
     _rv: dict[str, int] = {k: v for k, v in base_rings.items()}
     _atk = 0
     _par = 0
-    _kr: dict[str, int] = {k: 1 for k in MIRUMOTO_KNACK_NAMES}
+    _kr: dict[str, int] = {k: 1 for k in MATSU_KNACK_NAMES}
     _budget = combat_xp
-    _vb = False
-    _vd = 0
+    _fb = False
+    _fd = 0
 
-    for entry in MIRUMOTO_COMBAT_PROGRESSION:
+    for entry in MATSU_COMBAT_PROGRESSION:
         if entry in _rv:
             current = _rv[entry]
-            max_val = 6 if entry == "void" else 5
+            max_val = 6 if entry == "fire" else 5
             if current >= max_val:
                 continue
             cost = ring_raise_cost(current + 1)
-            if entry == "void" and _vd > 0:
-                cost = max(0, cost - _vd)
+            if entry == "fire" and _fd > 0:
+                cost = max(0, cost - _fd)
             if cost > _budget:
                 continue
             _rv[entry] = current + 1
@@ -258,10 +236,10 @@ def build_mirumoto_from_xp(
             _budget -= cost
             knack_cost += cost
 
-        if not _vb and all(_kr[k] >= 4 for k in MIRUMOTO_KNACK_NAMES):
-            _rv["void"] = min(_rv["void"] + 1, 6)
-            _vb = True
-            _vd = 5
+        if not _fb and all(_kr[k] >= 4 for k in MATSU_KNACK_NAMES):
+            _rv["fire"] = min(_rv["fire"] + 1, 6)
+            _fb = True
+            _fd = 5
 
     skill_cost = sum(
         advanced_skill_raise_cost(v) for v in range(1, stats.attack + 1)
@@ -280,9 +258,9 @@ def build_mirumoto_from_xp(
     )
 
     knack_display_names: dict[str, str] = {
-        "counterattack": "Counterattack",
         "double_attack": "Double Attack",
         "iaijutsu": "Iaijutsu",
+        "lunge": "Lunge",
     }
 
     skills = [
@@ -303,9 +281,9 @@ def build_mirumoto_from_xp(
         name=name,
         rings=rings,
         skills=skills,
-        school="Mirumoto Bushi",
-        school_ring=RingName.VOID,
-        school_knacks=["Counterattack", "Double Attack", "Iaijutsu"],
+        school="Matsu Bushi",
+        school_ring=RingName.FIRE,
+        school_knacks=["Double Attack", "Iaijutsu", "Lunge"],
         xp_total=total_xp,
         xp_spent=xp_spent,
     )

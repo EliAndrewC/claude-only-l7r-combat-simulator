@@ -7,7 +7,7 @@ abilities based on earned XP.
 
 from __future__ import annotations
 
-from src.engine.xp_builder import (
+from src.engine.character_builders.xp_builder import (
     ComputedStats,
     advanced_skill_raise_cost,
     ring_raise_cost,

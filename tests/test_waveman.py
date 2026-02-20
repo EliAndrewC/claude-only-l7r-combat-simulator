@@ -1,6 +1,6 @@
 """Tests for Wave Man profession builder."""
 
-from src.engine.waveman import (
+from src.engine.character_builders.waveman import (
     WAVE_MAN_ABILITY_ORDER,
     build_waveman_from_xp,
     compute_abilities,

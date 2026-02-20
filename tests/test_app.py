@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from streamlit.testing.v1 import AppTest
 
-from src.engine.kakita import compute_kakita_stats_from_xp
-from src.engine.matsu import compute_matsu_stats_from_xp
-from src.engine.mirumoto import compute_mirumoto_stats_from_xp
-from src.engine.waveman import compute_waveman_stats_from_xp
-from src.engine.xp_builder import compute_stats_from_xp
+from src.engine.character_builders.kakita import compute_kakita_stats_from_xp
+from src.engine.character_builders.matsu import compute_matsu_stats_from_xp
+from src.engine.character_builders.mirumoto import compute_mirumoto_stats_from_xp
+from src.engine.character_builders.waveman import compute_waveman_stats_from_xp
+from src.engine.character_builders.xp_builder import compute_stats_from_xp
 from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
 from src.models.weapon import WeaponType
 from src.ui_helpers import (

@@ -1,14 +1,14 @@
-"""Shinjo Bushi school builder.
+"""Kakita Duelist school builder.
 
-Builds Shinjo Bushi characters from earned XP. School ring is Air
+Builds Kakita Duelist characters from earned XP. School ring is Fire
 (starts at 3, max 6), other rings start at 2. School knacks
 (Double Attack, Iaijutsu, Lunge) start at rank 1 for free.
-Fourth Dan grants a free Air +1 when all knacks reach 4.
+Fourth Dan grants a free Fire +1 when all knacks reach 4.
 """
 
 from __future__ import annotations
 
-from src.engine.xp_builder import (
+from src.engine.character_builders.xp_builder import (
     ComputedStats,
     advanced_skill_raise_cost,
     ring_raise_cost,
@@ -22,48 +22,48 @@ from src.models.character import (
     SkillType,
 )
 
-SHINJO_KNACK_NAMES: list[str] = ["double_attack", "iaijutsu", "lunge"]
+KAKITA_KNACK_NAMES: list[str] = ["double_attack", "iaijutsu", "lunge"]
 
 # Each entry raises that stat by 1. Knack entries raise the named knack.
-# Ring priority: Air > Void > Water > Earth > Fire
-SHINJO_COMBAT_PROGRESSION: list[str] = [
-    # Skills/knacks to 3 (before non-Air rings reach 3)
+# Ring priority: Fire > Void > Water > Earth > Air
+KAKITA_COMBAT_PROGRESSION: list[str] = [
+    # Skills/knacks to 3 (before non-Fire rings reach 3)
     "parry",
     "attack", "parry",
     "double_attack", "iaijutsu", "lunge",  # 1->2
     "attack", "parry",
     "double_attack", "iaijutsu", "lunge",  # 2->3
 
-    # Rings first raise (Air 3->4, Void 2->3, Water 2->3, Earth 2->3, Fire 2->3)
-    "air", "void", "water", "earth", "fire",
+    # Rings first raise (Fire 3->4, Void 2->3, Water 2->3, Earth 2->3, Air 2->3)
+    "fire", "void", "water", "earth", "air",
 
-    # Skills/knacks to 4 (before non-Air rings reach 4)
+    # Skills/knacks to 4 (before non-Fire rings reach 4)
     "attack", "parry",
     "double_attack", "iaijutsu", "lunge",  # 3->4
 
-    # Rings second raise (Air 4->5, Void 3->4, etc.)
-    "air", "void", "water", "earth", "fire",
+    # Rings second raise (Fire 4->5, Void 3->4, etc.)
+    "fire", "void", "water", "earth", "air",
 
-    # Skills/knacks to 5 (before non-Air rings reach 5)
+    # Skills/knacks to 5 (before non-Fire rings reach 5)
     "attack", "parry",
     "double_attack", "iaijutsu", "lunge",  # 4->5
 
-    # Rings third raise (Air 5->6, Void 4->5, etc.)
-    "air", "void", "water", "earth", "fire",
+    # Rings third raise (Fire 5->6, Void 4->5, etc.)
+    "fire", "void", "water", "earth", "air",
 
     # Attack catch up
     "attack",
 ]
 
 
-def compute_shinjo_stats_from_xp(
+def compute_kakita_stats_from_xp(
     earned_xp: int = 0,
     non_combat_pct: float = 0.20,
 ) -> ComputedStats:
-    """Compute ring values, skill ranks, and knack ranks for a Shinjo Bushi.
+    """Compute ring values, skill ranks, and knack ranks for a Kakita Duelist.
 
-    School ring = Air (starts at 3, max 6); other rings start at 2, max 5.
-    School knacks start at 1. Fourth Dan grants a free Air +1.
+    School ring = Fire (starts at 3, max 6); other rings start at 2, max 5.
+    School knacks start at 1. Fourth Dan grants a free Fire +1.
 
     Args:
         earned_xp: XP earned beyond the base 150.
@@ -76,36 +76,36 @@ def compute_shinjo_stats_from_xp(
     combat_xp = int(total_xp * (1 - non_combat_pct))
 
     ring_values: dict[str, int] = {
-        "air": 3, "fire": 2, "earth": 2, "water": 2, "void": 2,
+        "air": 2, "fire": 3, "earth": 2, "water": 2, "void": 2,
     }
 
     attack = 0
     parry = 0
-    knack_ranks: dict[str, int] = {k: 1 for k in SHINJO_KNACK_NAMES}
+    knack_ranks: dict[str, int] = {k: 1 for k in KAKITA_KNACK_NAMES}
     budget = combat_xp
 
-    # Track 4th Dan air boost
-    air_boosted = False
-    air_cost_discount = 0
+    # Track 4th Dan fire boost
+    fire_boosted = False
+    fire_cost_discount = 0
 
     def _check_4th_dan() -> None:
-        nonlocal air_boosted, air_cost_discount
-        if air_boosted:
+        nonlocal fire_boosted, fire_cost_discount
+        if fire_boosted:
             return
-        if all(knack_ranks[k] >= 4 for k in SHINJO_KNACK_NAMES):
-            ring_values["air"] = min(ring_values["air"] + 1, 6)
-            air_boosted = True
-            air_cost_discount = 5
+        if all(knack_ranks[k] >= 4 for k in KAKITA_KNACK_NAMES):
+            ring_values["fire"] = min(ring_values["fire"] + 1, 6)
+            fire_boosted = True
+            fire_cost_discount = 5
 
-    for entry in SHINJO_COMBAT_PROGRESSION:
+    for entry in KAKITA_COMBAT_PROGRESSION:
         if entry in ring_values:
             current = ring_values[entry]
-            max_val = 6 if entry == "air" else 5
+            max_val = 6 if entry == "fire" else 5
             if current >= max_val:
                 continue
             cost = ring_raise_cost(current + 1)
-            if entry == "air" and air_cost_discount > 0:
-                cost = max(0, cost - air_cost_discount)
+            if entry == "fire" and fire_cost_discount > 0:
+                cost = max(0, cost - fire_cost_discount)
             if cost > budget:
                 continue
             ring_values[entry] = current + 1
@@ -151,12 +151,12 @@ def compute_shinjo_stats_from_xp(
     )
 
 
-def build_shinjo_from_xp(
-    name: str = "Shinjo",
+def build_kakita_from_xp(
+    name: str = "Kakita",
     earned_xp: int = 0,
     non_combat_pct: float = 0.20,
 ) -> Character:
-    """Build a Shinjo Bushi character by spending XP.
+    """Build a Kakita Duelist character by spending XP.
 
     Args:
         name: Character name.
@@ -166,7 +166,7 @@ def build_shinjo_from_xp(
     Returns:
         A fully constructed Character.
     """
-    stats = compute_shinjo_stats_from_xp(
+    stats = compute_kakita_stats_from_xp(
         earned_xp=earned_xp,
         non_combat_pct=non_combat_pct,
     )
@@ -176,7 +176,7 @@ def build_shinjo_from_xp(
     non_combat_xp = total_xp - combat_xp
 
     base_rings: dict[str, int] = {
-        "air": 3, "fire": 2, "earth": 2, "water": 2, "void": 2,
+        "air": 2, "fire": 3, "earth": 2, "water": 2, "void": 2,
     }
 
     # Recompute cost by replaying the progression (most accurate)
@@ -185,19 +185,19 @@ def build_shinjo_from_xp(
     _rv: dict[str, int] = {k: v for k, v in base_rings.items()}
     _atk = 0
     _par = 0
-    _kr: dict[str, int] = {k: 1 for k in SHINJO_KNACK_NAMES}
+    _kr: dict[str, int] = {k: 1 for k in KAKITA_KNACK_NAMES}
     _budget = combat_xp
     _fb = False
     _fd = 0
 
-    for entry in SHINJO_COMBAT_PROGRESSION:
+    for entry in KAKITA_COMBAT_PROGRESSION:
         if entry in _rv:
             current = _rv[entry]
-            max_val = 6 if entry == "air" else 5
+            max_val = 6 if entry == "fire" else 5
             if current >= max_val:
                 continue
             cost = ring_raise_cost(current + 1)
-            if entry == "air" and _fd > 0:
+            if entry == "fire" and _fd > 0:
                 cost = max(0, cost - _fd)
             if cost > _budget:
                 continue
@@ -236,8 +236,8 @@ def build_shinjo_from_xp(
             _budget -= cost
             knack_cost += cost
 
-        if not _fb and all(_kr[k] >= 4 for k in SHINJO_KNACK_NAMES):
-            _rv["air"] = min(_rv["air"] + 1, 6)
+        if not _fb and all(_kr[k] >= 4 for k in KAKITA_KNACK_NAMES):
+            _rv["fire"] = min(_rv["fire"] + 1, 6)
             _fb = True
             _fd = 5
 
@@ -281,8 +281,8 @@ def build_shinjo_from_xp(
         name=name,
         rings=rings,
         skills=skills,
-        school="Shinjo Bushi",
-        school_ring=RingName.AIR,
+        school="Kakita Duelist",
+        school_ring=RingName.FIRE,
         school_knacks=["Double Attack", "Iaijutsu", "Lunge"],
         xp_total=total_xp,
         xp_spent=xp_spent,

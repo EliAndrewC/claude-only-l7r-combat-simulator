@@ -1,6 +1,6 @@
 """Tests for the Matsu Bushi school builder."""
 
-from src.engine.matsu import (
+from src.engine.character_builders.matsu import (
     build_matsu_from_xp,
     compute_matsu_stats_from_xp,
 )

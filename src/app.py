@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src.engine.kakita import compute_kakita_stats_from_xp
-from src.engine.matsu import compute_matsu_stats_from_xp
-from src.engine.mirumoto import compute_mirumoto_stats_from_xp
-from src.engine.shinjo import compute_shinjo_stats_from_xp
-from src.engine.simulation import simulate_combat
-from src.engine.waveman import (
+from src.engine.character_builders.kakita import compute_kakita_stats_from_xp
+from src.engine.character_builders.matsu import compute_matsu_stats_from_xp
+from src.engine.character_builders.mirumoto import compute_mirumoto_stats_from_xp
+from src.engine.character_builders.shinjo import compute_shinjo_stats_from_xp
+from src.engine.character_builders.waveman import (
     WAVE_MAN_ABILITY_NAMES,
     compute_abilities,
     compute_waveman_stats_from_xp,
 )
-from src.engine.xp_builder import compute_stats_from_xp
+from src.engine.character_builders.xp_builder import compute_stats_from_xp
+from src.engine.simulation import simulate_combat
 from src.models.character import Character, Ring, RingName, Rings, Skill, SkillType
 from src.models.weapon import WEAPONS, WeaponType
 from src.ui_helpers import (

@@ -1,7 +1,7 @@
 """Tests for XP-based character builder."""
 
 
-from src.engine.xp_builder import (
+from src.engine.character_builders.xp_builder import (
     DEFAULT_COMBAT_PROGRESSION,
     advanced_skill_raise_cost,
     build_character_from_xp,

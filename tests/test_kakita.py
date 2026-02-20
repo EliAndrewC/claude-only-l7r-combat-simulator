@@ -1,6 +1,6 @@
 """Tests for the Kakita Duelist school builder."""
 
-from src.engine.kakita import (
+from src.engine.character_builders.kakita import (
     build_kakita_from_xp,
     compute_kakita_stats_from_xp,
 )

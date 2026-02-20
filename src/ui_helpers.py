@@ -6,7 +6,7 @@ import re
 
 import streamlit as st
 
-from src.engine.waveman import WAVE_MAN_ABILITY_NAMES
+from src.engine.character_builders.waveman import WAVE_MAN_ABILITY_NAMES
 from src.models.character import Character
 from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus
 from src.models.weapon import Weapon

@@ -456,6 +456,40 @@ class TestSimulationIntegration:
         log = simulate_combat(bayushi, generic, weapon, weapon, max_rounds=10)
         assert log.round_number >= 1
 
+    def test_bayushi_5th_dan_output_reflects_halving(self) -> None:
+        """5th Dan: wound check output shows halved LW and correct SW count."""
+        bayushi = _make_bayushi(
+            dan=5, fire=5, attack=5, parry=3,
+            da_rank=5, feint_rank=5, iaijutsu_rank=5,
+            earth=2, water=2, void=4,
+        )
+        # Strong attacker to ensure Bayushi takes big hits
+        generic = _make_generic(
+            fire=5, attack=5, parry=0, earth=5, water=5,
+        )
+        weapon = WEAPONS[WeaponType.KATANA]
+        # Run combats looking for a failed WC on Bayushi with 5th Dan note
+        found_5th_note = False
+        found_correct_sw = False
+        for _ in range(30):
+            log = simulate_combat(bayushi, generic, weapon, weapon, max_rounds=5)
+            for a in log.actions:
+                if (
+                    a.action_type == ActionType.WOUND_CHECK
+                    and a.actor == "Bayushi"
+                    and not a.success
+                ):
+                    if "bayushi 5th Dan" in (a.description or ""):
+                        found_5th_note = True
+                    if a.serious_wounds_taken is not None:
+                        found_correct_sw = True
+            if found_5th_note and found_correct_sw:
+                break
+        assert found_correct_sw, "Expected serious_wounds_taken on failed WC"
+        assert found_5th_note, (
+            "Expected bayushi 5th Dan note in wound check description"
+        )
+
     def test_sa_damage_bonus_in_log(self) -> None:
         """SA damage bonus appears when void spent on attacks."""
         bayushi = _make_bayushi(

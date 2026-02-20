@@ -379,6 +379,20 @@ class TestWoundCheckIcon:
         assert _wound_check_icon(action) == "💔🖤"
 
 
+    def test_serious_wounds_taken_field_overrides_calculation(self) -> None:
+        """serious_wounds_taken overrides TN-based serious wound calculation."""
+        action = _action(ActionType.WOUND_CHECK, actor="A")
+        action.success = False
+        action.tn = 43
+        action.total = 32
+        # Normal calc: 1 + (43 - 32) // 10 = 2 serious wounds
+        # But 5th Dan halving means only 1 was actually taken
+        action.serious_wounds_taken = 1
+        action.description = "A wound check: failed (rolled 32)"
+        # Icon should show 1 heart, not 2
+        assert _wound_check_icon(action) == "💔"
+
+
 class TestParryIcon:
     """Tests for dynamic parry icons."""
 

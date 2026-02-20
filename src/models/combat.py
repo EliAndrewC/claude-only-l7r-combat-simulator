@@ -75,6 +75,9 @@ class CombatAction(BaseModel):
     dice_pool: str = ""
     label: str = ""
     tn_description: str = ""
+    # Actual serious wounds taken from a failed wound check (after all overrides).
+    # None if not a failed wound check or not computed.
+    serious_wounds_taken: Optional[int] = None
     status_after: Optional[dict[str, FighterStatus]] = None
 
 

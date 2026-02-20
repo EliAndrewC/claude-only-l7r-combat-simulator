@@ -281,10 +281,12 @@ def _wound_check_icon(action: CombatAction) -> str:
     if action.success:
         # Deliberate conversion: always 1 serious wound
         return "💔" * (1 + da_auto)
-    # Failed: 1 + overflow serious wounds from the roll
-    # Use base_tn (ignoring ability-10 raise) for serious wound calculation
-    tn_for_sw = action.base_tn if action.base_tn is not None else action.tn
-    serious = 1 + max(0, (tn_for_sw - action.total) // 10)
+    # Failed: use actual count if available, else estimate from TN
+    if action.serious_wounds_taken is not None:
+        serious = action.serious_wounds_taken
+    else:
+        tn_for_sw = action.base_tn if action.base_tn is not None else action.tn
+        serious = 1 + max(0, (tn_for_sw - action.total) // 10)
     return "💔" * (serious + da_auto)
 
 
@@ -346,8 +348,11 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
             if action.success:
                 result = "passed"
             else:
-                tn_for_sw = action.base_tn if action.base_tn is not None else action.tn
-                serious = 1 + ((tn_for_sw - action.total) // 10)
+                if action.serious_wounds_taken is not None:
+                    serious = action.serious_wounds_taken
+                else:
+                    tn_for_sw = action.base_tn if action.base_tn is not None else action.tn
+                    serious = 1 + ((tn_for_sw - action.total) // 10)
                 da_auto = _da_auto_serious(action.description)
                 total_sw = serious + da_auto
                 if total_sw > 1:

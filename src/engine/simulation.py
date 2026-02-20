@@ -1323,6 +1323,18 @@ def _resolve_attack(
         f" from double attack)"
         if da_serious_wound > 0 else ""
     )
+
+    # Actual serious wounds from the wound check (after all overrides)
+    wc_serious: int | None = None
+    eff_lw_note = ""
+    if not passed:
+        wc_serious = wound_tracker.serious_wounds - sw_before_wc
+        if eff_lw_override is not None:
+            eff_lw_note = (
+                f" (bayushi 5th Dan: serious wounds based on"
+                f" {eff_lw} LW, not {wc_base_tn})"
+            )
+
     wc_rolled = water_value + 1 + wc_extra_rolled + void_spend
     wc_kept = water_value + void_spend + wc_extra_kept
     wc_action = CombatAction(
@@ -1335,10 +1347,11 @@ def _resolve_attack(
         tn=wc_tn,
         base_tn=wc_base_tn if ab10_bonus > 0 else None,
         success=passed,
+        serious_wounds_taken=wc_serious,
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
             f"(rolled {wc_total}){void_note}{void_spent_note}{wc_flat_note}{wc_bonus_note}"
-            f"{convert_note}{da_auto_sw_note}{ab10_note}"
+            f"{convert_note}{da_auto_sw_note}{ab10_note}{eff_lw_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )

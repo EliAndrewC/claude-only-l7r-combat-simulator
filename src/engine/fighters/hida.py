@@ -337,24 +337,8 @@ class HidaFighter(Fighter):
         weapon_rolled: int,
         attacker_fire: int,
     ) -> bool:
-        """Hida only parries when expected damage is very high."""
-        from src.engine.simulation_utils import should_reactive_parry
-
-        def_parry_skill = self.char.get_skill("Parry")
-        def_parry_rank = def_parry_skill.rank if def_parry_skill else 0
-        wound_info = self.state.log.wounds[self.name]
-        return should_reactive_parry(
-            def_parry_rank,
-            self.char.rings.air.value,
-            attack_total,
-            attack_tn,
-            weapon_rolled,
-            attacker_fire,
-            wound_info.serious_wounds,
-            wound_info.earth_ring,
-            wound_info.is_crippled,
-            is_kakita=True,
-        )
+        """Hida never parries — counterattack is the defense."""
+        return False
 
     def should_interrupt_parry(
         self,
@@ -363,24 +347,8 @@ class HidaFighter(Fighter):
         weapon_rolled: int,
         attacker_fire: int,
     ) -> bool:
-        """Hida only interrupt-parries against very high damage."""
-        from src.engine.simulation_utils import should_interrupt_parry
-
-        def_parry_skill = self.char.get_skill("Parry")
-        def_parry_rank = def_parry_skill.rank if def_parry_skill else 0
-        wound_info = self.state.log.wounds[self.name]
-        return should_interrupt_parry(
-            def_parry_rank,
-            self.char.rings.air.value,
-            attack_total,
-            attack_tn,
-            weapon_rolled,
-            attacker_fire,
-            len(self.actions_remaining),
-            wound_info.serious_wounds,
-            wound_info.earth_ring,
-            is_kakita=True,
-        )
+        """Hida never interrupt-parries — counterattack is the defense."""
+        return False
 
     # -- Counterattack hooks -----------------------------------------------
 
@@ -505,8 +473,28 @@ class HidaFighter(Fighter):
     def should_replace_wound_check(
         self, light_wounds: int,
     ) -> tuple[bool, int, str]:
-        """4th Dan: take 2 SW instead of wound check when LW >= 20."""
-        if self.dan >= 4 and light_wounds >= 20:
+        """4th Dan: take 2 SW instead of wound check when expecting 3+ SW.
+
+        Estimates the wound check total (with max void spend) and only
+        replaces when the expected serious wounds >= 3.
+        """
+        if self.dan < 4:
+            return False, 0, ""
+
+        water = self.char.rings.water.value
+        max_void = min(self.total_void, self.char.rings.lowest())
+        kept = water + max_void
+
+        # ~6.5 average per kept die (exploding d10 keep-highest)
+        expected_total = int(kept * 6.5)
+
+        # 5th Dan wound check bonus from counterattack margin
+        if self.dan >= 5:
+            expected_total += self._counterattack_margin
+
+        # Expected SW = 1 + (LW - expected_total) / 10  (when failing)
+        expected_sw = 1 + max(0, (light_wounds - expected_total)) // 10
+        if expected_sw >= 3:
             return True, 2, (
                 " (hida 4th Dan: taking 2 SW instead of"
                 " wound check, LW reset to 0)"

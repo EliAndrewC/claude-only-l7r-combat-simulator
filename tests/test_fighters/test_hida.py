@@ -279,40 +279,60 @@ class TestAttackReroll:
 
 
 class TestParryBehavior:
-    """Hida never pre-declares parries, but reacts to high damage."""
+    """Hida never parries — save dice for counterattack."""
 
     def test_never_predeclares_parry(self) -> None:
         fighter = _make_fighter(knack_rank=3, parry_rank=4, air=4)
         assert fighter.should_predeclare_parry(40, 5) is False
 
-    def test_reactive_parry_on_high_damage(self) -> None:
-        """Hida does parry when expected damage is very high."""
+    def test_never_reactive_parries(self) -> None:
+        """Hida never reactive parries, even on extreme hits."""
         fighter = _make_fighter(knack_rank=3, parry_rank=4, air=4)
         result = fighter.should_reactive_parry(
-            attack_total=65, attack_tn=30,
-            weapon_rolled=4, attacker_fire=4,
+            attack_total=99, attack_tn=30,
+            weapon_rolled=6, attacker_fire=6,
         )
-        assert result is True
+        assert result is False
+
+    def test_never_interrupt_parries(self) -> None:
+        """Hida never interrupt parries."""
+        fighter = _make_fighter(knack_rank=3, parry_rank=4, air=4)
+        fighter.actions_remaining = [3, 5, 7]
+        result = fighter.should_interrupt_parry(
+            attack_total=99, attack_tn=30,
+            weapon_rolled=6, attacker_fire=6,
+        )
+        assert result is False
 
 
 class TestShouldReplaceWoundCheck:
-    """4th Dan: replace wound check with 2 SW when LW >= 20."""
+    """4th Dan: replace wound check with 2 SW only when expecting 3+ SW."""
 
-    def test_4th_dan_high_lw(self) -> None:
-        fighter = _make_fighter(knack_rank=4)
-        should, sw, note = fighter.should_replace_wound_check(20)
+    def test_4th_dan_very_high_lw_low_water(self) -> None:
+        """With low water and extreme LW, replacement should trigger."""
+        fighter = _make_fighter(knack_rank=4, water=2, void_points=0)
+        # Water 2 → kept ~2, expected total ~14. LW 60 → expected ~5 SW.
+        should, sw, note = fighter.should_replace_wound_check(60)
         assert should is True
         assert sw == 2
         assert "hida 4th Dan" in note
 
-    def test_4th_dan_low_lw(self) -> None:
-        fighter = _make_fighter(knack_rank=4)
-        should, sw, note = fighter.should_replace_wound_check(19)
+    def test_4th_dan_moderate_lw_high_water_no_replace(self) -> None:
+        """With high water and moderate LW, should NOT replace."""
+        fighter = _make_fighter(knack_rank=4, water=6, void_points=4)
+        # Water 6 + void 4 → kept ~10, expected total ~65. LW 30 is easy.
+        should, sw, note = fighter.should_replace_wound_check(30)
+        assert should is False
+
+    def test_4th_dan_20_lw_no_replace(self) -> None:
+        """LW=20 with decent water should NOT trigger replacement."""
+        fighter = _make_fighter(knack_rank=4, water=3, void_points=2)
+        should, sw, note = fighter.should_replace_wound_check(20)
         assert should is False
 
     def test_3rd_dan_no_replace(self) -> None:
         fighter = _make_fighter(knack_rank=3)
-        should, sw, note = fighter.should_replace_wound_check(25)
+        should, sw, note = fighter.should_replace_wound_check(99)
         assert should is False
 
 

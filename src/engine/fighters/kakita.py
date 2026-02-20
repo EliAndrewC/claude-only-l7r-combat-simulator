@@ -251,13 +251,11 @@ def _resolve_kakita_phase0_attack(
     )
 
     # Wound check flat bonus via Fighter hook (e.g. Otaku 2nd Dan +5)
-    wc_flat_bonus = def_ctx.wound_check_flat_bonus()
-    wc_flat_note = ""
+    wc_flat_bonus, wc_flat_note = def_ctx.wound_check_flat_bonus()
     if wc_flat_bonus > 0:
         wc_total += wc_flat_bonus
         effective_tn = wound_tracker.light_wounds + ab10_bonus
         passed = wc_total >= effective_tn
-        wc_flat_note = f" (otaku 2nd Dan: free raise +{wc_flat_bonus})"
 
     # Shinjo 5th Dan: apply stored bonuses after seeing the roll
     shinjo_bonus_note = ""
@@ -554,13 +552,11 @@ def _resolve_kakita_5th_dan(
     )
 
     # Wound check flat bonus via Fighter hook (e.g. Otaku 2nd Dan +5)
-    wc_flat_bonus = def_ctx.wound_check_flat_bonus()
-    wc_flat_note = ""
+    wc_flat_bonus, wc_flat_note = def_ctx.wound_check_flat_bonus()
     if wc_flat_bonus > 0:
         wc_total += wc_flat_bonus
         effective_tn = wound_tracker.light_wounds + ab10_bonus
         passed = wc_total >= effective_tn
-        wc_flat_note = f" (otaku 2nd Dan: free raise +{wc_flat_bonus})"
 
     # Shinjo 5th Dan: apply stored bonuses after seeing the roll
     shinjo_bonus_note = ""

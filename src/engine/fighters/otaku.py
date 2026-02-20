@@ -183,10 +183,16 @@ class OtakuFighter(Fighter):
         return self.dan >= 4
 
     def should_trade_damage_for_wound(
-        self, damage_rolled: int,
+        self, damage_rolled: int, *, is_double_attack: bool = False,
     ) -> tuple[bool, int, str]:
-        """5th Dan: trade 10 damage dice for 1 automatic serious wound."""
-        if self.dan >= 5 and damage_rolled >= 12:
+        """5th Dan: trade 10 damage dice for 1 automatic serious wound.
+
+        Always trades on lunge/regular attacks when pool >= 10.
+        Never trades on double attacks (which already inflict auto SW).
+        """
+        if is_double_attack:
+            return False, 0, ""
+        if self.dan >= 5 and damage_rolled >= 10:
             return True, 10, " (otaku 5th Dan: traded 10 dice for 1 auto SW)"
         return False, 0, ""
 
@@ -230,9 +236,11 @@ class OtakuFighter(Fighter):
         """1st Dan: +1 rolled die on wound checks."""
         return 1 if self.dan >= 1 else 0
 
-    def wound_check_flat_bonus(self) -> int:
+    def wound_check_flat_bonus(self) -> tuple[int, str]:
         """2nd Dan: +5 flat bonus on wound checks (free raise)."""
-        return 5 if self.dan >= 2 else 0
+        if self.dan >= 2:
+            return 5, " (otaku 2nd Dan: free raise +5)"
+        return 0, ""
 
     # -- SA: Counter-lunge interrupt ----------------------------------------
 

@@ -197,6 +197,16 @@ class Fighter:
         """
         return 0, ""
 
+    def post_attack_reroll(
+        self, all_dice: list[int], kept_count: int,
+    ) -> tuple[list[int], list[int], int, str]:
+        """School-technique reroll after attack roll (default: no-op).
+
+        Returns (all_dice, kept_dice, total, note).
+        """
+        kept_dice = sorted(all_dice, reverse=True)[:kept_count]
+        return all_dice, kept_dice, sum(kept_dice), ""
+
     # -- Parry hooks (as defender) --------------------------------------
 
     def has_action_in_phase(self, phase: int) -> bool:
@@ -386,12 +396,14 @@ class Fighter:
         return False
 
     def should_trade_damage_for_wound(
-        self, damage_rolled: int,
+        self, damage_rolled: int, *, is_double_attack: bool = False,
     ) -> tuple[bool, int, str]:
         """Whether to trade damage dice for an automatic serious wound.
 
         Args:
             damage_rolled: Total rolled damage dice count.
+            is_double_attack: True if this is a double attack (which
+                already inflicts an automatic serious wound).
 
         Returns:
             Tuple of (should_trade, dice_to_remove, description_note).
@@ -410,15 +422,51 @@ class Fighter:
     ) -> None:
         """Reactive action after being attacked (default: no-op)."""
 
+    # -- Counterattack hooks -------------------------------------------
+
+    def resolve_pre_attack_counterattack(
+        self, attacker_name: str, phase: int,
+    ) -> tuple[int, int] | None:
+        """Pre-attack counterattack (resolves before opponent's attack roll).
+
+        Returns:
+            Tuple of (margin, sa_penalty) if counterattack fires, else None.
+        """
+        return None
+
+    def resolve_post_damage_counterattack(
+        self, attacker_name: str, phase: int, damage_total: int,
+    ) -> int:
+        """Post-damage counterattack (5th Dan: after seeing damage).
+
+        Returns:
+            Counterattack margin if fired, else 0.
+        """
+        return 0
+
+    def should_replace_wound_check(
+        self, light_wounds: int,
+    ) -> tuple[bool, int, str]:
+        """Whether to replace wound check with automatic serious wounds.
+
+        Returns:
+            Tuple of (should_replace, auto_sw_count, description_note).
+        """
+        return False, 0, ""
+
     # -- Wound check hooks (as defender) --------------------------------
 
     def wound_check_extra_rolled(self) -> int:
         """Extra rolled dice on wound check (default 0)."""
         return 0
 
-    def wound_check_flat_bonus(self) -> int:
-        """Flat bonus added to wound check total (default 0)."""
-        return 0
+    def wound_check_flat_bonus(self) -> tuple[int, str]:
+        """Flat bonus added to wound check total (default 0).
+
+        Returns:
+            Tuple of (bonus_amount, description_note).
+        """
+        return 0, ""
 
     def wound_check_void_strategy(self, water_ring: int, light_wounds: int) -> int:
         """Decide void to spend on wound check (default: use standard heuristic)."""

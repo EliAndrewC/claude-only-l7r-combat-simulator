@@ -243,6 +243,34 @@ def _resolve_attack(
     if consumed_die is None:
         return
 
+    # --- Pre-attack counterattack (e.g. Hida SA) ---
+    ca_margin = 0
+    ca_sa_penalty = 0
+    log_len_before_ca = len(log.actions)
+    ca_result = defender_fighter.resolve_pre_attack_counterattack(
+        attacker_name, phase,
+    )
+    if ca_result is not None:
+        ca_margin, ca_sa_penalty = ca_result
+
+        # Insert a declaration action *before* the counterattack actions
+        # so the output reads: "X attacks — Y counterattacks first"
+        decl_action = CombatAction(
+            phase=phase,
+            actor=attacker_name,
+            action_type=ActionType.ATTACK,
+            success=None,
+            description=(
+                f"{attacker_name} attacks"
+                f" — {defender_name} counterattacks first"
+            ),
+            label=f"attacks — {defender_name} counterattacks first",
+        )
+        log.actions.insert(log_len_before_ca, decl_action)
+
+        if log.wounds[attacker_name].is_mortally_wounded:
+            return  # Pre-attack kill stops the attack
+
     # Get skill ranks
     atk_skill = attacker.get_skill("Attack")
     atk_rank = atk_skill.rank if atk_skill else 0
@@ -475,6 +503,17 @@ def _resolve_attack(
             attack_action.phase = phase
             attack_action.target = defender_name
 
+    # School technique reroll on attack (e.g. Hida 3rd Dan)
+    new_all, new_kept, new_total, reroll_note = attacker_fighter.post_attack_reroll(
+        attack_action.dice_rolled, len(attack_action.dice_kept),
+    )
+    if reroll_note:
+        attack_action.dice_rolled = new_all
+        attack_action.dice_kept = new_kept
+        attack_action.total = new_total
+        attack_action.success = new_total >= tn
+        attack_action.description += reroll_note
+
     # Ability 5: Free crippled reroll on attack (before void reroll)
     if attacker_crippled:
         new_all, new_kept, new_total, note = attacker_fighter.crippled_reroll(
@@ -524,6 +563,13 @@ def _resolve_attack(
         attack_action.total += post_atk_bonus
         attack_action.success = attack_action.total >= tn
         attack_action.description += post_atk_note
+
+    # Hida SA penalty: attacker gets +5 on their attack roll
+    if ca_sa_penalty > 0:
+        attack_action.total += ca_sa_penalty
+        attack_action.success = attack_action.total >= tn
+        attack_action.description += f" (hida SA: attacker +{ca_sa_penalty})"
+
     attack_action.status_after = state.snapshot_status()
     log.add_action(attack_action)
 
@@ -553,7 +599,23 @@ def _resolve_attack(
     )
     pool_display = _format_pool_with_overflow(raw_rolled, weapon.kept)
     da_wound_note = " plus 1 automatic serious wound" if is_double_attack else ""
-    attack_action.description += f" — damage will be {pool_display}{da_wound_note}"
+    # Preview 5th Dan trade (Otaku trades 10 dice for 1 auto SW)
+    trade_preview = ""
+    if not is_double_attack:
+        preview_trade, _, _ = attacker_fighter.should_trade_damage_for_wound(
+            raw_rolled,
+        )
+        if preview_trade:
+            post_trade = _format_pool_with_overflow(
+                max(0, raw_rolled - 10), weapon.kept,
+            )
+            trade_preview = (
+                f" (5th Dan: trading 10 dice for 1 auto SW,"
+                f" rolling {post_trade})"
+            )
+    attack_action.description += (
+        f" — damage will be {pool_display}{da_wound_note}{trade_preview}"
+    )
 
     # --- Defender attempts parry ---
     parry_attempted = False
@@ -899,12 +961,17 @@ def _resolve_attack(
     # 5th Dan trade: trade damage dice for automatic serious wound
     trade_sw = 0
     trade_note = ""
-    total_dmg_pool = extra_dice + da_extra_rolled
+    full_pool = boosted_rolled + attacker.rings.fire.value + extra_dice + da_extra_rolled
     should_trade, dice_removed, t_note = attacker_fighter.should_trade_damage_for_wound(
-        boosted_rolled + attacker.rings.fire.value + total_dmg_pool,
+        full_pool, is_double_attack=is_double_attack,
     )
-    if should_trade and total_dmg_pool >= dice_removed:
-        extra_dice = max(0, extra_dice - dice_removed)
+    if should_trade and full_pool >= dice_removed:
+        # Remove dice from extras first, then from weapon rolled
+        remaining_to_remove = dice_removed
+        extras_removed = min(extra_dice, remaining_to_remove)
+        extra_dice -= extras_removed
+        remaining_to_remove -= extras_removed
+        boosted_rolled = max(0, boosted_rolled - remaining_to_remove)
         trade_sw = 1
         trade_note = t_note
 
@@ -959,6 +1026,44 @@ def _resolve_attack(
     # Snapshot after damage is applied
     damage_action.status_after = state.snapshot_status()
 
+    # --- Post-damage counterattack (only if pre-attack counterattack didn't fire) ---
+    if ca_result is None:
+        defender_fighter.resolve_post_damage_counterattack(
+            attacker_name, phase, damage_action.total,
+        )
+
+    # --- 4th Dan wound check replacement (e.g. Hida) ---
+    should_replace, auto_sw, replace_note = defender_fighter.should_replace_wound_check(
+        wound_tracker.light_wounds,
+    )
+    if should_replace:
+        wound_tracker.serious_wounds += auto_sw
+        wound_tracker.light_wounds = 0
+        wc_action = CombatAction(
+            phase=phase,
+            actor=defender_name,
+            action_type=ActionType.WOUND_CHECK,
+            total=0,
+            tn=None,
+            success=None,
+            description=(
+                f"{defender_name} wound check: replaced with"
+                f" {auto_sw} serious wounds{replace_note}"
+            ),
+            dice_pool="",
+            label=f"{auto_sw} serious wounds instead of wound check",
+        )
+        wc_action.status_after = state.snapshot_status()
+        log.add_action(wc_action)
+
+        # Post-attack interrupt still fires
+        if (
+            not log.wounds[attacker_name].is_mortally_wounded
+            and not log.wounds[defender_name].is_mortally_wounded
+        ):
+            defender_fighter.resolve_post_attack_interrupt(attacker_name, phase)
+        return
+
     # --- Wound check ---
     water_value = defender.rings.water.value
 
@@ -998,13 +1103,11 @@ def _resolve_attack(
     )
 
     # Wound check flat bonus via Fighter hook (e.g. Otaku 2nd Dan +5)
-    wc_flat_bonus = defender_fighter.wound_check_flat_bonus()
-    wc_flat_note = ""
+    wc_flat_bonus, wc_flat_note = defender_fighter.wound_check_flat_bonus()
     if wc_flat_bonus > 0:
         wc_total += wc_flat_bonus
         effective_tn = wound_tracker.light_wounds + ab10_bonus
         passed = wc_total >= effective_tn
-        wc_flat_note = f" (otaku 2nd Dan: free raise +{wc_flat_bonus})"
 
     # Ability 5: Free crippled reroll on wound check
     if not passed and log.wounds[defender_name].is_crippled:

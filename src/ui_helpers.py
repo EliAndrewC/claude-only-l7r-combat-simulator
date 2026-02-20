@@ -14,7 +14,7 @@ from src.models.weapon import Weapon
 # Annotations worth surfacing from action descriptions.
 _ANNOTATION_KEYWORDS = (
     "void", "pre-declared", "converted", "wave man",
-    "mirumoto", "matsu", "kakita", "shinjo", " dan", "crippled",
+    "mirumoto", "matsu", "kakita", "shinjo", "hida", " dan", "crippled",
 )
 
 
@@ -74,6 +74,7 @@ def _group_action_sequences(
         if action.action_type in (
             ActionType.ATTACK, ActionType.DOUBLE_ATTACK,
             ActionType.LUNGE, ActionType.IAIJUTSU,
+            ActionType.COUNTERATTACK,
         ):
             if current:
                 sequences.append(current)
@@ -131,8 +132,12 @@ def compute_combat_stats(log: CombatLog) -> dict:
     _ATTACK_TYPES = {
         ActionType.ATTACK, ActionType.DOUBLE_ATTACK,
         ActionType.LUNGE, ActionType.IAIJUTSU,
+        ActionType.COUNTERATTACK,
     }
-    attacks = [a for a in log.actions if a.action_type in _ATTACK_TYPES]
+    attacks = [
+        a for a in log.actions
+        if a.action_type in _ATTACK_TYPES and a.success is not None
+    ]
     hits = [a for a in attacks if a.success]
     parries = [a for a in log.actions if a.action_type == ActionType.PARRY]
     successful_parries = [a for a in parries if a.success]
@@ -248,6 +253,7 @@ _ACTION_ICONS = {
     ActionType.WOUND_CHECK: "❤️",
     ActionType.LUNGE: "🗡️💨",
     ActionType.IAIJUTSU: "⚡",
+    ActionType.COUNTERATTACK: "🗡️↩️",
 }
 
 
@@ -262,8 +268,12 @@ def _wound_check_icon(action: CombatAction) -> str:
 
     - Passed (light wounds kept): 🖤
     - Failed or deliberately converted: 💔 per serious wound taken
+    - Replaced (success=None): 💔💔 (e.g. Hida 4th Dan)
     Includes automatic serious wounds from double attack if present.
     """
+    if action.success is None:
+        # Replacement wound check (e.g. Hida 4th Dan: 2 SW)
+        return "💔💔"
     da_auto = _da_auto_serious(action.description)
     if action.success and "converted" not in action.description:
         return "💔" * da_auto + "🖤" if da_auto else "🖤"
@@ -316,6 +326,8 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
     elif action.action_type == ActionType.IAIJUTSU and "(interrupt)" in action.description:
         icon = f"❗{icon}"
     elif action.label and "counter-lunge" in action.label:
+        icon = f"❗{icon}"
+    elif action.label and "SA counterattack" in action.label:
         icon = f"❗{icon}"
 
     if action.action_type == ActionType.INITIATIVE:

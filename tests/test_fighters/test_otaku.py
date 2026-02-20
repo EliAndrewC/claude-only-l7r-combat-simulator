@@ -180,15 +180,20 @@ class TestWoundCheckFlatBonus:
 
     def test_2nd_dan(self) -> None:
         fighter = _make_fighter(knack_rank=2)
-        assert fighter.wound_check_flat_bonus() == 5
+        bonus, note = fighter.wound_check_flat_bonus()
+        assert bonus == 5
+        assert "otaku 2nd Dan" in note
 
     def test_1st_dan(self) -> None:
         fighter = _make_fighter(knack_rank=1)
-        assert fighter.wound_check_flat_bonus() == 0
+        bonus, note = fighter.wound_check_flat_bonus()
+        assert bonus == 0
+        assert note == ""
 
     def test_5th_dan(self) -> None:
         fighter = _make_fighter(knack_rank=5)
-        assert fighter.wound_check_flat_bonus() == 5
+        bonus, note = fighter.wound_check_flat_bonus()
+        assert bonus == 5
 
 
 class TestPostDamageEffect:
@@ -253,7 +258,11 @@ class TestLungeDamageSurvivesParry:
 
 
 class TestShouldTradeDamageForWound:
-    """5th Dan: trade 10 damage dice for 1 auto serious wound."""
+    """5th Dan: ALWAYS trade 10 damage dice for 1 auto serious wound.
+
+    The auto SW is not preventable by failed parry (unlike DA), so
+    a 5th Dan Otaku always wants this on lunge/regular attacks.
+    """
 
     def test_5th_dan_high_roll(self) -> None:
         fighter = _make_fighter(knack_rank=5)
@@ -262,15 +271,17 @@ class TestShouldTradeDamageForWound:
         assert dice == 10
         assert "otaku 5th Dan" in note
 
-    def test_5th_dan_exact_threshold(self) -> None:
+    def test_5th_dan_exact_minimum(self) -> None:
+        """Trade fires at exactly 10 dice (the minimum needed)."""
         fighter = _make_fighter(knack_rank=5)
-        should, dice, note = fighter.should_trade_damage_for_wound(12)
+        should, dice, note = fighter.should_trade_damage_for_wound(10)
         assert should is True
         assert dice == 10
 
-    def test_5th_dan_below_threshold(self) -> None:
+    def test_5th_dan_below_minimum(self) -> None:
+        """Cannot trade with fewer than 10 dice in pool."""
         fighter = _make_fighter(knack_rank=5)
-        should, dice, note = fighter.should_trade_damage_for_wound(11)
+        should, dice, note = fighter.should_trade_damage_for_wound(9)
         assert should is False
         assert dice == 0
 
@@ -278,6 +289,16 @@ class TestShouldTradeDamageForWound:
         fighter = _make_fighter(knack_rank=4)
         should, dice, note = fighter.should_trade_damage_for_wound(14)
         assert should is False
+
+    def test_5th_dan_not_on_double_attack(self) -> None:
+        """Trade should not be offered on double attacks."""
+        fighter = _make_fighter(knack_rank=5)
+        should, _, _ = fighter.should_trade_damage_for_wound(
+            14, is_double_attack=True,
+        )
+        assert should is False, (
+            "5th Dan trade must not fire on double attack"
+        )
 
 
 class TestResolvePostAttackInterrupt:

@@ -20,6 +20,7 @@ class ActionType(str, Enum):
     DOUBLE_ATTACK = "double attack"
     LUNGE = "lunge"
     COUNTERATTACK = "counterattack"
+    FEINT = "feint"
 
 
 class WoundTracker(BaseModel):

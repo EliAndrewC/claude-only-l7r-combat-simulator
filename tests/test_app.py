@@ -792,6 +792,47 @@ class TestLungeActionSequence:
         assert len(seqs[1]) == 3
 
 
+class TestFeintActionSequence:
+    """Tests for Feint action type in grouping and display."""
+
+    def test_feint_starts_new_sequence(self) -> None:
+        """FEINT starts a new action sequence like ATTACK does."""
+        actions = [
+            _action(ActionType.INITIATIVE, actor="A"),
+            _action(ActionType.INITIATIVE, actor="B"),
+            _action(ActionType.FEINT, phase=2, actor="A"),
+            _action(ActionType.DAMAGE, phase=2, actor="A"),
+            _action(ActionType.WOUND_CHECK, phase=2, actor="B"),
+        ]
+        seqs = _group_action_sequences(actions)
+        assert len(seqs) == 2
+        assert seqs[0][0].action_type == ActionType.INITIATIVE
+        assert seqs[1][0].action_type == ActionType.FEINT
+        assert len(seqs[1]) == 3
+
+    def test_consecutive_feints_separate_sequences(self) -> None:
+        """Two consecutive feints are separate sequences with status between."""
+        actions = [
+            _action(ActionType.FEINT, phase=2, actor="A"),
+            _action(ActionType.DAMAGE, phase=2, actor="A"),
+            _action(ActionType.WOUND_CHECK, phase=2, actor="B"),
+            _action(ActionType.FEINT, phase=2, actor="A"),
+            _action(ActionType.DAMAGE, phase=2, actor="A"),
+            _action(ActionType.WOUND_CHECK, phase=2, actor="B"),
+        ]
+        seqs = _group_action_sequences(actions)
+        assert len(seqs) == 2
+        assert seqs[0][0].action_type == ActionType.FEINT
+        assert seqs[1][0].action_type == ActionType.FEINT
+
+    def test_feint_icon_in_mapping(self) -> None:
+        """FEINT has its own icon in the action icons mapping."""
+        from src.ui_helpers import _ACTION_ICONS
+
+        assert ActionType.FEINT in _ACTION_ICONS
+        assert _ACTION_ICONS[ActionType.FEINT] != "▪️"
+
+
 class TestMatsuUI:
     """Tests for Matsu Bushi build mode UI."""
 

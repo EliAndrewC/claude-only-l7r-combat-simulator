@@ -300,16 +300,21 @@ def _resolve_attack(
     # Save TN after all reductions but before DA +20 for extra dice calc
     base_tn = tn
 
-    # --- Double Attack / Lunge decision via Fighter hook ---
+    # --- Double Attack / Lunge / Feint decision via Fighter hook ---
     is_double_attack = False
     is_lunge = False
+    is_feint = False
     is_near_miss_da = False
     da_void_spend = 0
     lunge_void_spend = 0
+    feint_void_spend = 0
+    total_attack_void = 0
     da_skill = attacker.get_skill("Double Attack")
     da_rank = da_skill.rank if da_skill else 0
     lunge_skill = attacker.get_skill("Lunge")
     lunge_rank = lunge_skill.rank if lunge_skill else 0
+    feint_skill = attacker.get_skill("Feint")
+    feint_rank = feint_skill.rank if feint_skill else 0
 
     # Check for forced lunge (e.g. Otaku counter-lunge) before choose_attack
     counter_lunge_label = ""
@@ -328,6 +333,9 @@ def _resolve_attack(
         elif attack_choice == "lunge":
             is_lunge = True
             lunge_void_spend = choice_void
+        elif attack_choice == "feint":
+            is_feint = True
+            feint_void_spend = choice_void
 
     if is_double_attack:
         tn += 20
@@ -400,6 +408,62 @@ def _resolve_attack(
         )
         # Lunge: opponent's next attack gets -5 TN
         defender_fighter.lunge_target_bonus = 5
+        total_attack_void = actual_lunge_void
+
+    elif is_feint:
+        # Feint attack: uses Feint knack + Fire ring
+        feint_extra = attacker_fighter.feint_extra_rolled()
+        ft_rolled = feint_rank + attacker.rings.fire.value + feint_extra
+        ft_kept = attacker.rings.fire.value
+
+        # Void spending on feint
+        ft_void_label = ""
+        actual_feint_void = 0
+        ft_avail = attacker_fighter.total_void
+        if feint_void_spend > 0 and ft_avail >= feint_void_spend:
+            ft_from_temp, ft_from_reg = attacker_fighter.spend_void(feint_void_spend)
+            ft_void_label = _void_spent_label(ft_from_temp, ft_from_reg)
+            ft_rolled += feint_void_spend
+            ft_kept += feint_void_spend
+            actual_feint_void = feint_void_spend
+            attacker_fighter.on_void_spent(actual_feint_void, "feint")
+
+        all_dice, kept_dice, total = roll_and_keep(
+            ft_rolled, ft_kept, explode=attack_explode,
+        )
+        fifth_dan_combat_bonus = attacker_fighter.fifth_dan_void_bonus(
+            feint_void_spend,
+        )
+        total += fifth_dan_combat_bonus
+
+        # SA bonus on feint (e.g. Shinjo held-die bonus)
+        sa_bonus, sa_note = attacker_fighter.sa_attack_bonus(phase, consumed_die)
+        if sa_bonus > 0:
+            total += sa_bonus
+
+        success = total >= tn
+        void_note = f" ({ft_void_label})" if ft_void_label else ""
+        fifth_note = attacker_fighter.fifth_dan_void_description(
+            fifth_dan_combat_bonus,
+        )
+        attack_action = CombatAction(
+            phase=phase,
+            actor=attacker_name,
+            action_type=ActionType.FEINT,
+            target=defender_name,
+            dice_rolled=all_dice,
+            dice_kept=kept_dice,
+            total=total,
+            tn=tn,
+            success=success,
+            description=(
+                f"{attacker_name} feints: "
+                f"{_format_pool_with_overflow(ft_rolled, ft_kept)}"
+                f" vs TN {tn}{void_note}{fifth_note}{sa_note}"
+            ),
+            dice_pool=_format_pool_with_overflow(ft_rolled, ft_kept),
+        )
+        total_attack_void = actual_feint_void
 
     elif is_double_attack:
         # Double attack uses Double Attack skill + Fire (not Attack skill)
@@ -459,6 +523,7 @@ def _resolve_attack(
             ),
             dice_pool=_format_pool_with_overflow(da_rolled, da_kept),
         )
+        total_attack_void = actual_da_void
     else:
         # Normal attack: void spending via Fighter hook
         atk_void_spend = attacker_fighter.attack_void_strategy(
@@ -510,6 +575,7 @@ def _resolve_attack(
             )
             attack_action.phase = phase
             attack_action.target = defender_name
+        total_attack_void = atk_void_spend
 
     # School technique reroll on attack (e.g. Hida 3rd Dan)
     new_all, new_kept, new_total, reroll_note = attacker_fighter.post_attack_reroll(
@@ -572,6 +638,14 @@ def _resolve_attack(
         attack_action.success = attack_action.total >= tn
         attack_action.description += post_atk_note
 
+    # Feint free raise bonus (consumed on non-feint attacks)
+    if not is_feint:
+        fr_bonus, fr_note = attacker_fighter.consume_free_raise_bonus()
+        if fr_bonus > 0:
+            attack_action.total += fr_bonus
+            attack_action.success = attack_action.total >= tn
+            attack_action.description += fr_note
+
     # Hida SA penalty: attacker gets +5 on their attack roll
     if ca_sa_penalty > 0:
         attack_action.total += ca_sa_penalty
@@ -595,35 +669,41 @@ def _resolve_attack(
         return
 
     # Annotate attack hit with expected damage pool (assuming no parry)
+    # Feints skip this — they don't deal normal damage
     # For double attack, use base_tn (before +20) for extra dice calculation
-    extra_tn = base_tn if is_double_attack else tn
-    no_parry_extra = max(0, (attack_action.total - extra_tn) // 5)
-    # Account for ability 3 weapon boost and lunge bonus in the preview
     preview_weapon_rolled = attacker_fighter.weapon_rolled_boost(weapon.rolled, weapon.kept)
     lunge_preview_bonus = (1 + attacker_fighter.lunge_extra_rolled()) if is_lunge else 0
-    raw_rolled = (
-        preview_weapon_rolled + attacker.rings.fire.value
-        + no_parry_extra + lunge_preview_bonus
-    )
-    pool_display = _format_pool_with_overflow(raw_rolled, weapon.kept)
-    da_wound_note = " plus 1 automatic serious wound" if is_double_attack else ""
-    # Preview 5th Dan trade (Otaku trades 10 dice for 1 auto SW)
-    trade_preview = ""
-    if not is_double_attack:
-        preview_trade, _, _ = attacker_fighter.should_trade_damage_for_wound(
-            raw_rolled,
+    if not is_feint:
+        extra_tn = base_tn if is_double_attack else tn
+        no_parry_extra = max(0, (attack_action.total - extra_tn) // 5)
+        # SA damage preview
+        sa_prev_r, sa_prev_k = attacker_fighter.sa_attack_damage_bonus(
+            total_attack_void,
         )
-        if preview_trade:
-            post_trade = _format_pool_with_overflow(
-                max(0, raw_rolled - 10), weapon.kept,
+        raw_rolled = (
+            preview_weapon_rolled + attacker.rings.fire.value
+            + no_parry_extra + lunge_preview_bonus + sa_prev_r
+        )
+        preview_kept = weapon.kept + sa_prev_k
+        pool_display = _format_pool_with_overflow(raw_rolled, preview_kept)
+        da_wound_note = " plus 1 automatic serious wound" if is_double_attack else ""
+        # Preview 5th Dan trade (Otaku trades 10 dice for 1 auto SW)
+        trade_preview = ""
+        if not is_double_attack:
+            preview_trade, _, _ = attacker_fighter.should_trade_damage_for_wound(
+                raw_rolled,
             )
-            trade_preview = (
-                f" (5th Dan: trading 10 dice for 1 auto SW,"
-                f" rolling {post_trade})"
-            )
-    attack_action.description += (
-        f" — damage will be {pool_display}{da_wound_note}{trade_preview}"
-    )
+            if preview_trade:
+                post_trade = _format_pool_with_overflow(
+                    max(0, raw_rolled - 10), preview_kept,
+                )
+                trade_preview = (
+                    f" (5th Dan: trading 10 dice for 1 auto SW,"
+                    f" rolling {post_trade})"
+                )
+        attack_action.description += (
+            f" — damage will be {pool_display}{da_wound_note}{trade_preview}"
+        )
 
     # --- Defender attempts parry ---
     parry_attempted = False
@@ -925,6 +1005,52 @@ def _resolve_attack(
                     f" is reduced to {reduced_display}"
                 )
 
+    # --- Feint resolution (skip normal damage) ---
+    if is_feint:
+        feint_landed = attack_action.success and not parry_succeeded
+
+        # Temp void: only on successful hit (not parried)
+        feint_notes: list[str] = []
+        if feint_landed:
+            attacker_fighter.temp_void += 1
+            feint_notes.append("+1 temp void")
+
+        # Die movement: always happens (unconditional per rules)
+        die_moved = False
+        if attacker_fighter.actions_remaining:
+            highest = max(attacker_fighter.actions_remaining)
+            if highest > phase:
+                attacker_fighter.actions_remaining.remove(highest)
+                attacker_fighter.actions_remaining.append(phase)
+                attacker_fighter.actions_remaining.sort()
+                die_moved = True
+                feint_notes.append(
+                    f"moved phase {highest} die to phase {phase}",
+                )
+
+        if feint_notes:
+            attack_action.description += (
+                f" — feint: {', '.join(feint_notes)}"
+            )
+
+        # Fighter hook for school-specific feint effects
+        attacker_fighter.on_feint_result(
+            feint_landed, phase, defender_name, total_attack_void,
+        )
+
+        attack_action.status_after = state.snapshot_status()
+
+        # If die was moved, the attacker can act again at this phase
+        if die_moved and phase in attacker_fighter.actions_remaining:
+            if (
+                not log.wounds[attacker_name].is_mortally_wounded
+                and not log.wounds[defender_name].is_mortally_wounded
+            ):
+                _resolve_attack(
+                    state, attacker_fighter, defender_fighter, phase,
+                )
+        return
+
     # --- Roll damage ---
     # For double attack, extra dice use base_tn (before +20)
     extra_tn_for_dice = base_tn if is_double_attack else tn
@@ -988,18 +1114,32 @@ def _resolve_attack(
         trade_sw = 1
         trade_note = t_note
 
-    extra_dmg = extra_dice + da_extra_rolled
+    # SA damage bonus from void spent on attack (e.g. Bayushi +1k1 per void)
+    sa_dmg_rolled, sa_dmg_kept = attacker_fighter.sa_attack_damage_bonus(
+        total_attack_void,
+    )
+
+    extra_dmg = extra_dice + da_extra_rolled + sa_dmg_rolled
+    dmg_extra_kept = sa_dmg_kept
     damage_action = roll_damage(
         attacker, boosted_rolled, weapon.kept, extra_dmg,
+        extra_kept=dmg_extra_kept,
     )
     damage_action.phase = phase
     damage_action.target = defender_name
     # Show overflow conversion in damage dice pool
     dmg_rolled = (
         boosted_rolled + attacker.rings.fire.value
-        + extra_dice + da_extra_rolled
+        + extra_dice + da_extra_rolled + sa_dmg_rolled
     )
-    damage_action.dice_pool = _format_pool_with_overflow(dmg_rolled, weapon.kept)
+    dmg_kept_total = weapon.kept + dmg_extra_kept
+    damage_action.dice_pool = _format_pool_with_overflow(
+        dmg_rolled, dmg_kept_total,
+    )
+    if sa_dmg_rolled > 0:
+        damage_action.description += (
+            f" (SA: +{sa_dmg_rolled}k{sa_dmg_kept} from void on attack)"
+        )
 
     # Ability 4: Damage rounding — via Fighter hook
     damage_total, rounding_note = attacker_fighter.damage_rounding(damage_action.total)
@@ -1111,10 +1251,14 @@ def _resolve_attack(
     sw_before_wc = wound_tracker.serious_wounds
 
     wc_extra_kept = defender_fighter.wound_check_extra_kept()
+    # Bayushi 5th Dan: halve LW for serious wound calculation on failure
+    eff_lw = defender_fighter.wound_check_serious_lw(wound_tracker.light_wounds)
+    eff_lw_override = eff_lw if eff_lw != wound_tracker.light_wounds else None
     passed, wc_total, wc_all_dice, wc_kept_dice = make_wound_check(
         wound_tracker, water_value, void_spend=void_spend,
         extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
         extra_kept=wc_extra_kept,
+        effective_lw_for_serious=eff_lw_override,
     )
 
     # Wound check flat bonus via Fighter hook (e.g. Otaku 2nd Dan +5)

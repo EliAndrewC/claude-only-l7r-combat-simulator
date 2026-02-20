@@ -50,6 +50,7 @@ class Fighter:
         self.shinjo_bonuses = shinjo_bonuses if shinjo_bonuses is not None else []
         self.lunge_target_bonus = lunge_target_bonus
         self.parry_tn_reduction = 0
+        self.feint_free_raises = 0
 
     # -- Convenience accessors ------------------------------------------
 
@@ -207,6 +208,40 @@ class Fighter:
         """
         kept_dice = sorted(all_dice, reverse=True)[:kept_count]
         return all_dice, kept_dice, sum(kept_dice), ""
+
+    # -- Feint hooks ----------------------------------------------------
+
+    def feint_extra_rolled(self) -> int:
+        """Extra rolled dice on feint attacks (default 0)."""
+        return 0
+
+    def on_feint_result(
+        self, feint_landed: bool, phase: int,
+        defender_name: str = "", void_spent: int = 0,
+    ) -> None:
+        """Called after every feint attempt (default: no-op)."""
+
+    def consume_free_raise_bonus(self) -> tuple[int, str]:
+        """Consume accumulated free raises. Returns (bonus, description_note)."""
+        return 0, ""
+
+    # -- SA damage hooks ------------------------------------------------
+
+    def sa_attack_damage_bonus(self, void_spent: int) -> tuple[int, int]:
+        """Extra (rolled, kept) damage dice from SA when void spent on attack.
+
+        Default: no bonus.
+        """
+        return 0, 0
+
+    # -- Wound check overrides ------------------------------------------
+
+    def wound_check_serious_lw(self, light_wounds: int) -> int:
+        """Effective LW for serious wound calc on failed WC.
+
+        Default: returns light_wounds unchanged.
+        """
+        return light_wounds
 
     # -- Parry hooks (as defender) --------------------------------------
 

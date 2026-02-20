@@ -14,7 +14,7 @@ from src.models.weapon import Weapon
 # Annotations worth surfacing from action descriptions.
 _ANNOTATION_KEYWORDS = (
     "void", "pre-declared", "converted", "wave man",
-    "mirumoto", "matsu", "kakita", "shinjo", "hida", "shiba", " dan", "crippled",
+    "mirumoto", "matsu", "kakita", "shinjo", "hida", "shiba", "bayushi", " dan", "crippled",
 )
 
 
@@ -74,7 +74,7 @@ def _group_action_sequences(
         if action.action_type in (
             ActionType.ATTACK, ActionType.DOUBLE_ATTACK,
             ActionType.LUNGE, ActionType.IAIJUTSU,
-            ActionType.COUNTERATTACK,
+            ActionType.COUNTERATTACK, ActionType.FEINT,
         ):
             if current:
                 sequences.append(current)
@@ -254,6 +254,7 @@ _ACTION_ICONS = {
     ActionType.LUNGE: "🗡️💨",
     ActionType.IAIJUTSU: "⚡",
     ActionType.COUNTERATTACK: "🗡️↩️",
+    ActionType.FEINT: "🎭",
 }
 
 

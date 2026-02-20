@@ -114,23 +114,25 @@ def roll_damage(
     weapon_rolled: int,
     weapon_kept: int,
     extra_dice: int = 0,
+    extra_kept: int = 0,
 ) -> CombatAction:
     """Roll damage for a successful attack.
 
-    Damage dice = weapon_rolled + Fire ring + extra_dice, keep weapon_kept.
+    Damage dice = weapon_rolled + Fire ring + extra_dice, keep weapon_kept + extra_kept.
 
     Args:
         attacker: The attacking character.
         weapon_rolled: Base rolled dice from weapon.
         weapon_kept: Base kept dice from weapon.
         extra_dice: Bonus rolled dice (e.g., from raises).
+        extra_kept: Bonus kept dice (e.g., from Bayushi SA).
 
     Returns:
         A CombatAction recording the damage roll.
     """
     fire = attacker.rings.fire.value
     rolled = weapon_rolled + fire + extra_dice
-    kept = weapon_kept
+    kept = weapon_kept + extra_kept
 
     all_dice, kept_dice, total = roll_and_keep(rolled, kept, explode=True)
 
@@ -153,6 +155,7 @@ def make_wound_check(
     extra_rolled: int = 0,
     tn_bonus: int = 0,
     extra_kept: int = 0,
+    effective_lw_for_serious: int | None = None,
 ) -> tuple[bool, int, list[int], list[int]]:
     """Make a wound check against the current light wound total.
 
@@ -168,6 +171,9 @@ def make_wound_check(
         tn_bonus: Bonus added to TN for pass/fail (e.g. from ability 10).
             Serious wound calculation uses the original TN.
         extra_kept: Extra kept dice (e.g. Shiba 4th Dan +3k1).
+        effective_lw_for_serious: Override light wounds used for serious wound
+            calculation on failure (e.g. Bayushi 5th Dan uses half LW).
+            None = use actual light wounds.
 
     Returns:
         Tuple of (passed, roll_total, all_dice, kept_dice).
@@ -186,8 +192,9 @@ def make_wound_check(
     passed = total >= effective_tn
 
     if not passed:
-        # Serious wounds calculated against the original TN (not raised)
-        deficit = base_tn - total
+        # Serious wounds calculated against effective LW (may be overridden)
+        serious_tn = effective_lw_for_serious if effective_lw_for_serious is not None else base_tn
+        deficit = serious_tn - total
         if deficit > 0:
             serious = 1 + (deficit // 10)
         else:

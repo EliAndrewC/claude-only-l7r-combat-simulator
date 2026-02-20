@@ -129,9 +129,9 @@ choose to be harmed, where X is your rank in this knack.
 
 **Ring:** Fire
 
-This attack does no damage, but if successful it yields a temporary void point 
-which may be used this round. Your highest action is then moved to the current 
-phase. The target is not told whether the attack against them is a feint until 
+This attack does no damage, but if successful it yields a temporary void point.
+Your highest action is then moved to the current phase.  The target is not told
+whether the attack against them is a feint until 
 after they see whether it hits, and after any parries are resolved.
 
 

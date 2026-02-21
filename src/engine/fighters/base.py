@@ -572,6 +572,22 @@ class Fighter:
         """
         return 0, ""
 
+    def post_roll_modify(
+        self,
+        all_dice: list[int],
+        kept_count: int,
+        total: int,
+        tn: int,
+        context: str,
+        explode: bool = True,
+    ) -> tuple[list[int], list[int], int, int, str]:
+        """Post-roll modification (default: no-op).
+
+        Returns (all_dice, kept_dice, new_total, void_spent, note).
+        """
+        kept_dice = sorted(all_dice, reverse=True)[:kept_count]
+        return all_dice, kept_dice, total, 0, ""
+
     def on_void_spent(self, amount: int, context: str) -> str:
         """Called whenever void is spent. Returns description note."""
         return ""

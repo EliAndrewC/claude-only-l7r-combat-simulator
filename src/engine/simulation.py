@@ -587,6 +587,24 @@ def _resolve_attack(
                 attack_action.description += sa_note
         total_attack_void = atk_void_spend
 
+    # Post-roll modify (e.g. Merchant SA + 5th Dan)
+    prm_all, prm_kept, prm_total, prm_void, prm_note = (
+        attacker_fighter.post_roll_modify(
+            attack_action.dice_rolled, len(attack_action.dice_kept),
+            attack_action.total, tn, "attack", explode=attack_explode,
+        )
+    )
+    if prm_note:
+        attack_action.dice_rolled = prm_all
+        attack_action.dice_kept = prm_kept
+        attack_action.total = prm_total
+        attack_action.success = prm_total >= tn
+        attack_action.description += prm_note
+        attack_action.dice_pool = _format_pool_with_overflow(
+            len(prm_all), len(prm_kept),
+        )
+    total_attack_void += prm_void
+
     # School technique reroll on attack (e.g. Hida 3rd Dan)
     new_all, new_kept, new_total, reroll_note = attacker_fighter.post_attack_reroll(
         attack_action.dice_rolled, len(attack_action.dice_kept),
@@ -872,6 +890,21 @@ def _resolve_attack(
         elif def_parry_void_label:
             parry_bonus_note += f" ({def_parry_void_label})"
 
+        # Post-roll modify on parry (e.g. Merchant SA + 5th Dan)
+        prm_all, prm_kept, prm_total, prm_void, prm_note = (
+            defender_fighter.post_roll_modify(
+                all_dice, parry_kept, parry_total, parry_tn - parry_bonus,
+                "parry", explode=parry_explode,
+            )
+        )
+        if prm_note:
+            all_dice = prm_all
+            kept_dice = prm_kept
+            parry_total = prm_total
+            parry_kept = len(prm_kept)
+            parry_rolled = len(prm_all)
+            parry_bonus_note += prm_note
+
         # Ability 5: Free crippled reroll on parry
         if defender_crippled:
             all_dice, kept_dice, parry_total, ab5_note = defender_fighter.crippled_reroll(
@@ -1156,6 +1189,22 @@ def _resolve_attack(
         damage_action.total += sa_dmg_flat
         damage_action.description += sa_dmg_flat_note
 
+    # Post-roll modify on damage (e.g. Merchant 5th Dan reroll)
+    prm_all, prm_kept, prm_total, prm_void, prm_note = (
+        attacker_fighter.post_roll_modify(
+            damage_action.dice_rolled, len(damage_action.dice_kept),
+            damage_action.total, 0, "damage", explode=True,
+        )
+    )
+    if prm_note:
+        damage_action.dice_rolled = prm_all
+        damage_action.dice_kept = prm_kept
+        damage_action.total = prm_total
+        damage_action.description += prm_note
+        damage_action.dice_pool = _format_pool_with_overflow(
+            len(prm_all), len(prm_kept),
+        )
+
     # Ability 4: Damage rounding — via Fighter hook
     damage_total, rounding_note = attacker_fighter.damage_rounding(damage_action.total)
     if rounding_note:
@@ -1276,6 +1325,22 @@ def _resolve_attack(
         effective_lw_for_serious=eff_lw_override,
     )
 
+    # Post-roll modify on wound check (e.g. Merchant SA + 5th Dan)
+    wc_prm_note = ""
+    prm_all, prm_kept, prm_total, prm_void, prm_note = (
+        defender_fighter.post_roll_modify(
+            wc_all_dice, water_value + void_spend + wc_extra_kept,
+            wc_total, wound_tracker.light_wounds + ab10_bonus,
+            "wound_check", explode=not log.wounds[defender_name].is_crippled,
+        )
+    )
+    if prm_note:
+        wc_all_dice = prm_all
+        wc_kept_dice = prm_kept
+        wc_total = prm_total
+        passed = wc_total >= wound_tracker.light_wounds + ab10_bonus
+        wc_prm_note = prm_note
+
     # Wound check flat bonus via Fighter hook (e.g. Otaku 2nd Dan +5)
     wc_flat_bonus, wc_flat_note = defender_fighter.wound_check_flat_bonus()
     if wc_flat_bonus > 0:
@@ -1351,8 +1416,8 @@ def _resolve_attack(
                 f" {eff_lw} LW, not {wc_base_tn})"
             )
 
-    wc_rolled = water_value + 1 + wc_extra_rolled + void_spend
-    wc_kept = water_value + void_spend + wc_extra_kept
+    wc_rolled = len(wc_all_dice)
+    wc_kept = len(wc_kept_dice)
     wc_action = CombatAction(
         phase=phase,
         actor=defender_name,
@@ -1366,7 +1431,8 @@ def _resolve_attack(
         serious_wounds_taken=wc_serious,
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
-            f"(rolled {wc_total}){void_note}{void_spent_note}{wc_flat_note}{wc_bonus_note}"
+            f"(rolled {wc_total}){void_note}{void_spent_note}{wc_prm_note}"
+            f"{wc_flat_note}{wc_bonus_note}"
             f"{ab10_note}{convert_note}{da_auto_sw_note}{eff_lw_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",

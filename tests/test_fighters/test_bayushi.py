@@ -295,6 +295,18 @@ class TestWoundCheckHooks:
         fighter, _ = _make_fighter(char)
         assert fighter.wound_check_serious_lw(40) == 40
 
+    def test_5th_dan_severity_divisor(self) -> None:
+        """5th Dan: severity divisor is 2 (tolerates ~2x LW before converting)."""
+        char = _make_bayushi(dan=5, attack=5)
+        fighter, _ = _make_fighter(char)
+        assert fighter.wound_check_lw_severity_divisor() == 2
+
+    def test_pre_5th_severity_divisor(self) -> None:
+        """Pre-5th Dan: severity divisor is 1 (normal threshold)."""
+        char = _make_bayushi(dan=4)
+        fighter, _ = _make_fighter(char)
+        assert fighter.wound_check_lw_severity_divisor() == 1
+
 
 class TestChooseAttack:
     """Test attack choice strategy."""

@@ -109,12 +109,19 @@ def should_convert_light_to_serious(
     earth_ring: int,
     water_ring: int = 2,
     shinjo_wc_bonus_pool: int = 0,
+    lw_severity_divisor: int = 1,
 ) -> bool:
-    """Decide whether to convert light wounds to 1 serious wound on a passed wound check."""
+    """Decide whether to convert light wounds to 1 serious wound on a passed wound check.
+
+    ``lw_severity_divisor`` accounts for abilities that reduce the severity of
+    accumulated light wounds (e.g. Bayushi 5th Dan halves LW for serious wound
+    calculation on a failed wound check, so passes ``2``).  The threshold is
+    multiplied by this divisor so the fighter tolerates proportionally more LW.
+    """
     if serious_wounds + 1 >= 2 * earth_ring:
         return False
 
-    if light_wounds <= 10:
+    if light_wounds <= 10 * lw_severity_divisor:
         return False
 
     avg_wc = water_ring * 6.5 + 2
@@ -125,6 +132,7 @@ def should_convert_light_to_serious(
         threshold = round(threshold * 1.5)
 
     threshold += shinjo_wc_bonus_pool
+    threshold *= lw_severity_divisor
 
     return light_wounds > threshold
 

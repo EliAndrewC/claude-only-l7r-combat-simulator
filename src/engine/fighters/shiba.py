@@ -118,6 +118,7 @@ def _resolve_shiba_parry_damage(
             wound_tracker.serious_wounds,
             wound_tracker.earth_ring,
             water_ring=water_value,
+            lw_severity_divisor=target_ctx.wound_check_lw_severity_divisor(),
         )
         if should_convert:
             wound_tracker.serious_wounds += 1

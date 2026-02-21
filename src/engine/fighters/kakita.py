@@ -316,6 +316,7 @@ def _resolve_kakita_phase0_attack(
             wound_tracker.earth_ring,
             water_ring=water_value,
             shinjo_wc_bonus_pool=def_shinjo_pool,
+            lw_severity_divisor=def_ctx.wound_check_lw_severity_divisor(),
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -343,7 +344,7 @@ def _resolve_kakita_phase0_attack(
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
             f"(rolled {wc_total}){void_note}{wc_flat_note}"
-            f"{shinjo_bonus_note}{convert_note}{ab10_note}"
+            f"{shinjo_bonus_note}{ab10_note}{convert_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )
@@ -616,6 +617,7 @@ def _resolve_kakita_5th_dan(
             wound_tracker.earth_ring,
             water_ring=water_value,
             shinjo_wc_bonus_pool=def_shinjo_pool,
+            lw_severity_divisor=def_ctx.wound_check_lw_severity_divisor(),
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -643,7 +645,7 @@ def _resolve_kakita_5th_dan(
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
             f"(rolled {wc_total}){void_note}{wc_flat_note}"
-            f"{shinjo_bonus_note}{convert_note}{ab10_note}"
+            f"{shinjo_bonus_note}{ab10_note}{convert_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )

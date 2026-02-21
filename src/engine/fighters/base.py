@@ -243,6 +243,15 @@ class Fighter:
         """
         return light_wounds
 
+    def wound_check_lw_severity_divisor(self) -> int:
+        """Divisor for LW severity when deciding to convert on a passed WC.
+
+        Fighters whose failed wound checks use reduced LW (e.g. Bayushi 5th
+        Dan halves LW) can tolerate proportionally more light wounds before
+        voluntarily converting.  Default: 1 (no adjustment).
+        """
+        return 1
+
     # -- Parry hooks (as defender) --------------------------------------
 
     def has_action_in_phase(self, phase: int) -> bool:

@@ -2,6 +2,18 @@
 
 A tabletop RPG combat simulator based on custom L7R (Legend of the Five Rings) house rules. Pick two samurai, choose their weapons, and watch them fight round-by-round with full dice rolls, parries, wounds, and a declared winner.
 
+## Development
+
+```bash
+podman run --interactive --tty --rm \
+  --name claude-only \
+  --userns keep-id \
+  --volume "$(pwd)":/home/agent/workspace/l7r \
+  --publish 8501:8501 \
+  docker.io/docker/sandbox-templates:claude-code \
+  bash
+```
+
 ## Setup
 
 Requires Python 3.10+.

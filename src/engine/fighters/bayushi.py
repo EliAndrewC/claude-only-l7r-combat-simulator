@@ -132,6 +132,7 @@ def _resolve_bayushi_feint_damage(
             wound_tracker.serious_wounds,
             wound_tracker.earth_ring,
             water_ring=water_value,
+            lw_severity_divisor=target_ctx.wound_check_lw_severity_divisor(),
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -369,3 +370,7 @@ class BayushiFighter(Fighter):
         if self.dan >= 5:
             return light_wounds // 2
         return light_wounds
+
+    def wound_check_lw_severity_divisor(self) -> int:
+        """5th Dan: tolerate ~2x LW before converting (halved serious on failure)."""
+        return 2 if self.dan >= 5 else 1

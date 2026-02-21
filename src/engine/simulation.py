@@ -1306,6 +1306,7 @@ def _resolve_attack(
             wound_tracker.earth_ring,
             water_ring=water_value,
             shinjo_wc_bonus_pool=defender_fighter.wc_bonus_pool_total(),
+            lw_severity_divisor=defender_fighter.wound_check_lw_severity_divisor(),
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -1351,7 +1352,7 @@ def _resolve_attack(
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
             f"(rolled {wc_total}){void_note}{void_spent_note}{wc_flat_note}{wc_bonus_note}"
-            f"{convert_note}{da_auto_sw_note}{ab10_note}{eff_lw_note}"
+            f"{ab10_note}{convert_note}{da_auto_sw_note}{eff_lw_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
     )

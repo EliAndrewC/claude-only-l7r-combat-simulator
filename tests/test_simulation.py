@@ -884,6 +884,52 @@ class TestWoundCheckSuccessChoice:
             water_ring=2, shinjo_wc_bonus_pool=10,
         ) is True
 
+    # --- Bayushi 5th Dan: lw_severity_divisor doubles threshold ---
+
+    def test_severity_divisor_doubles_threshold(self) -> None:
+        """With lw_severity_divisor=2, the threshold is doubled."""
+        # Water 2 → base threshold 12. Normal: 15 > 12 → converts.
+        assert _should_convert_light_to_serious(
+            light_wounds=15, serious_wounds=0, earth_ring=4,
+            water_ring=2, lw_severity_divisor=1,
+        ) is True
+        # With divisor 2 → threshold 24. 15 < 24 → keeps.
+        assert _should_convert_light_to_serious(
+            light_wounds=15, serious_wounds=0, earth_ring=4,
+            water_ring=2, lw_severity_divisor=2,
+        ) is False
+
+    def test_severity_divisor_keeps_20_that_would_normally_convert(self) -> None:
+        """Bayushi 5th Dan with Water 2 keeps 20 LW (normally converts at 13+)."""
+        assert _should_convert_light_to_serious(
+            light_wounds=20, serious_wounds=0, earth_ring=4,
+            water_ring=2, lw_severity_divisor=2,
+        ) is False
+
+    def test_severity_divisor_still_converts_extreme(self) -> None:
+        """Even with divisor 2, very high LW still converts."""
+        # Water 2 → base threshold 12 * 2 = 24. 30 > 24 → converts.
+        assert _should_convert_light_to_serious(
+            light_wounds=30, serious_wounds=0, earth_ring=4,
+            water_ring=2, lw_severity_divisor=2,
+        ) is True
+
+    def test_severity_divisor_scales_early_return(self) -> None:
+        """The <= 10 early-return guard is also scaled by the divisor."""
+        # Normal: 15 > 10, proceeds to threshold check.
+        # With divisor 2: 15 <= 20 → early return False.
+        assert _should_convert_light_to_serious(
+            light_wounds=15, serious_wounds=0, earth_ring=4,
+            water_ring=5, lw_severity_divisor=2,
+        ) is False
+
+    def test_severity_divisor_default_unchanged(self) -> None:
+        """Default divisor=1 doesn't change existing behavior."""
+        assert _should_convert_light_to_serious(
+            light_wounds=15, serious_wounds=0, earth_ring=4,
+            water_ring=2, lw_severity_divisor=1,
+        ) is True
+
     # --- Integration: full simulation produces conversions ---
 
     def test_converts_in_full_simulation(self) -> None:

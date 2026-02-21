@@ -23,9 +23,10 @@ class TestFighterMutableState:
         state = make_combat_state(char_a, char_b, void_a=3)
         fighter = state.fighters["A"]
         fighter.temp_void = 2
-        from_temp, from_reg = fighter.spend_void(3)
+        from_temp, from_reg, from_wl = fighter.spend_void(3)
         assert from_temp == 2
         assert from_reg == 1
+        assert from_wl == 0
         assert fighter.temp_void == 0
         assert fighter.void_points == 2
 
@@ -35,9 +36,10 @@ class TestFighterMutableState:
         state = make_combat_state(char_a, char_b, void_a=3)
         fighter = state.fighters["A"]
         fighter.temp_void = 2
-        from_temp, from_reg = fighter.spend_void(1)
+        from_temp, from_reg, from_wl = fighter.spend_void(1)
         assert from_temp == 1
         assert from_reg == 0
+        assert from_wl == 0
         assert fighter.temp_void == 1
 
     def test_spend_void_no_temp(self) -> None:
@@ -45,9 +47,10 @@ class TestFighterMutableState:
         char_b = make_character("B")
         state = make_combat_state(char_a, char_b, void_a=3)
         fighter = state.fighters["A"]
-        from_temp, from_reg = fighter.spend_void(2)
+        from_temp, from_reg, from_wl = fighter.spend_void(2)
         assert from_temp == 0
         assert from_reg == 2
+        assert from_wl == 0
         assert fighter.void_points == 1
 
 

@@ -44,6 +44,7 @@ class Fighter:
         self._weapon = weapon
         self.void_points = void_points
         self.temp_void = temp_void
+        self.worldliness_void = 0
         self.dan_points = dan_points
         self.actions_remaining = actions_remaining if actions_remaining is not None else []
         self.matsu_bonuses = matsu_bonuses if matsu_bonuses is not None else []
@@ -72,14 +73,14 @@ class Fighter:
 
     @property
     def total_void(self) -> int:
-        """Total available void = regular + temp."""
-        return self.void_points + self.temp_void
+        """Total available void = regular + temp + worldliness."""
+        return self.void_points + self.temp_void + self.worldliness_void
 
-    def spend_void(self, amount: int) -> tuple[int, int]:
-        """Spend void points, consuming temp void first.
+    def spend_void(self, amount: int) -> tuple[int, int, int]:
+        """Spend void points: temp first, then regular, then worldliness.
 
         Returns:
-            Tuple of (from_temp, from_regular).
+            Tuple of (from_temp, from_regular, from_worldliness).
         """
         from_temp = min(amount, self.temp_void)
         if from_temp > 0:
@@ -89,7 +90,12 @@ class Fighter:
         if remainder > 0:
             from_regular = min(remainder, self.void_points)
             self.void_points -= from_regular
-        return from_temp, from_regular
+        remainder -= from_regular
+        from_worldliness = 0
+        if remainder > 0:
+            from_worldliness = min(remainder, self.worldliness_void)
+            self.worldliness_void -= from_worldliness
+        return from_temp, from_regular, from_worldliness
 
     @property
     def dan(self) -> int:

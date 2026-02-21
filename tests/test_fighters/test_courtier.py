@@ -547,6 +547,66 @@ class TestParryReluctance:
         ) is False
 
 
+class TestWorldlinessVoidPool:
+    """Worldliness knack provides a separate void point pool."""
+
+    def test_worldliness_void_initialized_to_knack_rank(self) -> None:
+        """worldliness_void equals the Worldliness skill rank."""
+        for rank in range(6):
+            fighter = _make_fighter(knack_rank=rank)
+            assert fighter.worldliness_void == rank
+
+    def test_total_void_includes_worldliness(self) -> None:
+        """total_void sums regular + temp + worldliness."""
+        fighter = _make_fighter(knack_rank=3, void_points=2)
+        fighter.temp_void = 1
+        # regular=2, temp=1, worldliness=3
+        assert fighter.total_void == 6
+
+    def test_spend_order_temp_regular_worldliness(self) -> None:
+        """Spending drains temp first, then regular, then worldliness."""
+        fighter = _make_fighter(knack_rank=2, void_points=1)
+        fighter.temp_void = 1
+        # Available: temp=1, regular=1, worldliness=2 → total=4
+        assert fighter.total_void == 4
+
+        from_temp, from_reg, from_wl = fighter.spend_void(4)
+        assert from_temp == 1
+        assert from_reg == 1
+        assert from_wl == 2
+        assert fighter.temp_void == 0
+        assert fighter.void_points == 0
+        assert fighter.worldliness_void == 0
+
+    def test_spend_worldliness_partial(self) -> None:
+        """Only worldliness is consumed when temp and regular are empty."""
+        fighter = _make_fighter(knack_rank=3, void_points=0)
+        fighter.temp_void = 0
+        # worldliness=3 only
+        from_temp, from_reg, from_wl = fighter.spend_void(2)
+        assert from_temp == 0
+        assert from_reg == 0
+        assert from_wl == 2
+        assert fighter.worldliness_void == 1
+
+    def test_worldliness_not_touched_when_others_suffice(self) -> None:
+        """Worldliness pool is preserved when temp+regular cover the cost."""
+        fighter = _make_fighter(knack_rank=3, void_points=2)
+        fighter.temp_void = 1
+        from_temp, from_reg, from_wl = fighter.spend_void(2)
+        assert from_wl == 0
+        assert fighter.worldliness_void == 3
+
+    def test_non_courtier_has_zero_worldliness(self) -> None:
+        """Non-courtier fighters have worldliness_void == 0."""
+        char = _make_generic()
+        opp = _make_courtier()
+        state = _make_state(opp, char)
+        fighter = state.fighters[char.name]
+        assert not isinstance(fighter, CourtierFighter)
+        assert fighter.worldliness_void == 0
+
+
 class TestFactoryRegistration:
     """Courtier creates via fighter factory."""
 

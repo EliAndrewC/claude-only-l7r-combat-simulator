@@ -237,8 +237,8 @@ def _resolve_kakita_phase0_attack(
         water_value, wound_tracker.light_wounds, def_ctx.total_void,
         max_spend=max_spend, extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
     )
-    wc_from_temp, wc_from_reg = def_ctx.spend_void(void_spend)
-    wc_void_label = void_spent_label(wc_from_temp, wc_from_reg)
+    wc_from_temp, wc_from_reg, wc_from_wl = def_ctx.spend_void(void_spend)
+    wc_void_label = void_spent_label(wc_from_temp, wc_from_reg, wc_from_wl)
 
     def_is_shinjo = defender.school == "Shinjo Bushi"
     def_dan_shinjo = defender.dan if def_is_shinjo else 0
@@ -539,8 +539,8 @@ def _resolve_kakita_5th_dan(
         water_value, wound_tracker.light_wounds, def_ctx.total_void,
         max_spend=max_spend, extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
     )
-    wc_from_temp, wc_from_reg = def_ctx.spend_void(void_spend)
-    wc_void_label = void_spent_label(wc_from_temp, wc_from_reg)
+    wc_from_temp, wc_from_reg, wc_from_wl = def_ctx.spend_void(void_spend)
+    wc_void_label = void_spent_label(wc_from_temp, wc_from_reg, wc_from_wl)
 
     def_is_shinjo = defender.school == "Shinjo Bushi"
     def_dan_shinjo = defender.dan if def_is_shinjo else 0

@@ -371,8 +371,8 @@ def _resolve_attack(
         actual_lunge_void = 0
         avail_void = attacker_fighter.total_void
         if lunge_void_spend > 0 and avail_void >= lunge_void_spend:
-            lng_from_temp, lng_from_reg = attacker_fighter.spend_void(lunge_void_spend)
-            lng_void_label = _void_spent_label(lng_from_temp, lng_from_reg)
+            lng_from_temp, lng_from_reg, lng_from_wl = attacker_fighter.spend_void(lunge_void_spend)
+            lng_void_label = _void_spent_label(lng_from_temp, lng_from_reg, lng_from_wl)
             lng_rolled += lunge_void_spend
             lng_kept += lunge_void_spend
             actual_lunge_void = lunge_void_spend
@@ -421,8 +421,8 @@ def _resolve_attack(
         actual_feint_void = 0
         ft_avail = attacker_fighter.total_void
         if feint_void_spend > 0 and ft_avail >= feint_void_spend:
-            ft_from_temp, ft_from_reg = attacker_fighter.spend_void(feint_void_spend)
-            ft_void_label = _void_spent_label(ft_from_temp, ft_from_reg)
+            ft_from_temp, ft_from_reg, ft_from_wl = attacker_fighter.spend_void(feint_void_spend)
+            ft_void_label = _void_spent_label(ft_from_temp, ft_from_reg, ft_from_wl)
             ft_rolled += feint_void_spend
             ft_kept += feint_void_spend
             actual_feint_void = feint_void_spend
@@ -476,8 +476,8 @@ def _resolve_attack(
         actual_da_void = 0
         da_avail = attacker_fighter.total_void
         if da_void_spend > 0 and da_avail >= da_void_spend:
-            da_from_temp, da_from_reg = attacker_fighter.spend_void(da_void_spend)
-            da_void_label = _void_spent_label(da_from_temp, da_from_reg)
+            da_from_temp, da_from_reg, da_from_wl = attacker_fighter.spend_void(da_void_spend)
+            da_void_label = _void_spent_label(da_from_temp, da_from_reg, da_from_wl)
             da_rolled += da_void_spend
             da_kept += da_void_spend
             actual_da_void = da_void_spend
@@ -534,8 +534,8 @@ def _resolve_attack(
         atk_void_label = ""
         atk_avail = attacker_fighter.total_void
         if atk_void_spend > 0 and atk_avail >= atk_void_spend:
-            atk_from_temp, atk_from_reg = attacker_fighter.spend_void(atk_void_spend)
-            atk_void_label = _void_spent_label(atk_from_temp, atk_from_reg)
+            atk_from_temp, atk_from_reg, atk_from_wl = attacker_fighter.spend_void(atk_void_spend)
+            atk_void_label = _void_spent_label(atk_from_temp, atk_from_reg, atk_from_wl)
         else:
             atk_void_spend = 0
 
@@ -619,8 +619,11 @@ def _resolve_attack(
             new_all, new_kept, new_total = reroll_tens(
                 attack_action.dice_rolled, len(attack_action.dice_kept),
             )
-            cr_from_temp, cr_from_reg = attacker_fighter.spend_void(1)
-            cr_label = "temp void" if cr_from_temp else "void"
+            cr_from_temp, cr_from_reg, cr_from_wl = attacker_fighter.spend_void(1)
+            cr_label = (
+                "temp void" if cr_from_temp
+                else ("worldliness void" if cr_from_wl else "void")
+            )
             attack_action.dice_rolled = new_all
             attack_action.dice_kept = new_kept
             attack_action.total = new_total
@@ -849,8 +852,10 @@ def _resolve_attack(
         def_parry_void_label = ""
         def_void_avail = defender_fighter.total_void
         if def_parry_void_spend > 0 and def_void_avail >= def_parry_void_spend:
-            pv_from_temp, pv_from_reg = defender_fighter.spend_void(def_parry_void_spend)
-            def_parry_void_label = _void_spent_label(pv_from_temp, pv_from_reg)
+            pv_from_temp, pv_from_reg, pv_from_wl = defender_fighter.spend_void(
+                def_parry_void_spend,
+            )
+            def_parry_void_label = _void_spent_label(pv_from_temp, pv_from_reg, pv_from_wl)
             parry_rolled += def_parry_void_spend
             parry_kept += def_parry_void_spend
         else:
@@ -883,8 +888,11 @@ def _resolve_attack(
                 all_dice, kept_dice, parry_total = reroll_tens(
                     all_dice, parry_kept,
                 )
-                pcr_from_temp, pcr_from_reg = defender_fighter.spend_void(1)
-                pcr_label = "temp void" if pcr_from_temp else "void"
+                pcr_from_temp, pcr_from_reg, pcr_from_wl = defender_fighter.spend_void(1)
+                pcr_label = (
+                    "temp void" if pcr_from_temp
+                    else ("worldliness void" if pcr_from_wl else "void")
+                )
                 parry_bonus_note += f" ({pcr_label}: rerolled 10s)"
                 defender_fighter.on_void_spent(1, "crippled_parry_reroll")
 
@@ -1248,8 +1256,8 @@ def _resolve_attack(
             extra_rolled=wc_extra_rolled,
             tn_bonus=ab10_bonus,
         )
-    wc_from_temp, wc_from_reg = defender_fighter.spend_void(void_spend)
-    wc_void_label = _void_spent_label(wc_from_temp, wc_from_reg)
+    wc_from_temp, wc_from_reg, wc_from_wl = defender_fighter.spend_void(void_spend)
+    wc_void_label = _void_spent_label(wc_from_temp, wc_from_reg, wc_from_wl)
 
     # Wound check void spending generates bonus (via Fighter hook)
     if void_spend > 0:

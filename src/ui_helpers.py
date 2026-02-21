@@ -454,6 +454,8 @@ def _format_fighter_status(name: str, status: FighterStatus) -> str:
     ]
     if status.temp_void_points > 0:
         parts.append(f"Temp Void {status.temp_void_points}")
+    if status.worldliness_void_points > 0:
+        parts.append(f"Worldliness VPs {status.worldliness_void_points}")
     if status.dan_points > 0:
         parts.append(f"3rd Dan points: {status.dan_points}")
     if status.matsu_bonuses:

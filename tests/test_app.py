@@ -796,6 +796,24 @@ class TestCourtierAnnotation:
         result = extract_annotations(desc)
         assert "(courtier SA: +6 damage)" in result
 
+    def test_worldliness_vps_displayed_when_positive(self) -> None:
+        """Worldliness VPs shown in status line when > 0."""
+        status = FighterStatus(
+            void_points=2, void_points_max=2,
+            worldliness_void_points=3, actions_remaining=[4],
+        )
+        result = _format_fighter_status("Courtier", status)
+        assert "Worldliness VPs 3" in result
+
+    def test_worldliness_vps_hidden_when_zero(self) -> None:
+        """Worldliness VPs not shown when 0."""
+        status = FighterStatus(
+            void_points=2, void_points_max=2,
+            worldliness_void_points=0, actions_remaining=[4],
+        )
+        result = _format_fighter_status("Courtier", status)
+        assert "Worldliness" not in result
+
 
 class TestLungeActionSequence:
     """Tests for Lunge action type in grouping and display."""

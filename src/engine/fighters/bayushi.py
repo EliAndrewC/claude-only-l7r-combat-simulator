@@ -105,8 +105,8 @@ def _resolve_bayushi_feint_damage(
             water_value, wound_tracker.light_wounds, target_ctx.total_void,
             max_spend=max_spend, extra_rolled=wc_extra_rolled,
         )
-    wc_from_temp, wc_from_reg = target_ctx.spend_void(void_spend)
-    wc_void_label = void_spent_label(wc_from_temp, wc_from_reg)
+    wc_from_temp, wc_from_reg, wc_from_wl = target_ctx.spend_void(void_spend)
+    wc_void_label = void_spent_label(wc_from_temp, wc_from_reg, wc_from_wl)
 
     passed, wc_total, wc_all_dice, wc_kept_dice = make_wound_check(
         wound_tracker, water_value, void_spend=void_spend,

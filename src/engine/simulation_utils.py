@@ -235,16 +235,26 @@ def spend_void(
     return from_temp, from_regular
 
 
-def void_spent_label(from_temp: int, from_regular: int) -> str:
+def void_spent_label(
+    from_temp: int, from_regular: int, from_worldliness: int = 0,
+) -> str:
     """Format a human-readable label for void spending."""
-    total = from_temp + from_regular
+    total = from_temp + from_regular + from_worldliness
     if total == 0:
         return ""
-    if from_regular == 0:
-        return f"{total} temp void spent"
-    if from_temp == 0:
+    # Collect special source annotations
+    annotations: list[str] = []
+    if from_temp > 0:
+        annotations.append(f"{from_temp} temp")
+    if from_worldliness > 0:
+        annotations.append(f"{from_worldliness} worldliness")
+    if not annotations:
         return f"{total} void spent"
-    return f"{total} void spent ({from_temp} temp)"
+    # All from temp (no worldliness, no regular) — preserve legacy format
+    if from_regular == 0 and from_worldliness == 0:
+        return f"{total} temp void spent"
+    detail = ", ".join(annotations)
+    return f"{total} void spent ({detail})"
 
 
 def total_void(

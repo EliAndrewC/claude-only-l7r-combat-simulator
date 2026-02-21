@@ -42,6 +42,7 @@ class CombatState:
                 void_points=fighter.void_points,
                 void_points_max=fighter.char.void_points_max,
                 temp_void_points=fighter.temp_void,
+                worldliness_void_points=fighter.worldliness_void,
                 dan_points=fighter.dan_points,
                 matsu_bonuses=list(fighter.matsu_bonuses),
                 shinjo_bonuses=list(fighter.shinjo_bonuses),

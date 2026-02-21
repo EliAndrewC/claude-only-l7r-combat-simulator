@@ -41,6 +41,9 @@ class CourtierFighter(Fighter):
         self._free_raises = 2 * tact_rank if self.dan >= 3 else 0
         self._max_per_roll = tact_rank if self.dan >= 3 else 0
         self._targets_hit: set[str] = set()
+        worldliness_skill = self.char.get_skill("Worldliness")
+        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
+        self.worldliness_void = worldliness_rank
 
     # -- Attack hooks -------------------------------------------------------
 

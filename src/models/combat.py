@@ -52,6 +52,7 @@ class FighterStatus(BaseModel):
     void_points: int = 0
     void_points_max: int = 0
     temp_void_points: int = 0
+    worldliness_void_points: int = 0
     dan_points: int = 0
     matsu_bonuses: list[int] = Field(default_factory=list)
     shinjo_bonuses: list[int] = Field(default_factory=list)

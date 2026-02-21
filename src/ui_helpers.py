@@ -14,7 +14,8 @@ from src.models.weapon import Weapon
 # Annotations worth surfacing from action descriptions.
 _ANNOTATION_KEYWORDS = (
     "void", "pre-declared", "converted", "wave man",
-    "mirumoto", "matsu", "kakita", "shinjo", "hida", "shiba", "bayushi", " dan", "crippled",
+    "mirumoto", "matsu", "kakita", "shinjo", "hida", "shiba", "bayushi",
+    "courtier", " dan", "crippled",
 )
 
 

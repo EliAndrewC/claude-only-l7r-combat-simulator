@@ -258,6 +258,50 @@ def make_shinjo(
     )
 
 
+def make_courtier(
+    name: str = "Courtier",
+    knack_rank: int = 1,
+    attack_rank: int = 3,
+    parry_rank: int = 2,
+    tact_rank: int = 5,
+    **ring_overrides: int,
+) -> Character:
+    """Create a Courtier school character."""
+    return Character(
+        name=name,
+        rings=Rings(**_rings(**ring_overrides)),
+        school="Courtier",
+        school_ring=RingName.AIR,
+        school_knacks=["Discern Honor", "Oppose Social", "Worldliness"],
+        skills=[
+            Skill(
+                name="Attack", rank=attack_rank,
+                skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Parry", rank=parry_rank,
+                skill_type=SkillType.ADVANCED, ring=RingName.AIR,
+            ),
+            Skill(
+                name="Tact", rank=tact_rank,
+                skill_type=SkillType.BASIC, ring=RingName.AIR,
+            ),
+            Skill(
+                name="Discern Honor", rank=knack_rank,
+                skill_type=SkillType.BASIC, ring=RingName.AIR,
+            ),
+            Skill(
+                name="Oppose Social", rank=knack_rank,
+                skill_type=SkillType.BASIC, ring=RingName.AIR,
+            ),
+            Skill(
+                name="Worldliness", rank=knack_rank,
+                skill_type=SkillType.BASIC, ring=RingName.AIR,
+            ),
+        ],
+    )
+
+
 def make_combat_state(
     char_a: Character,
     char_b: Character,

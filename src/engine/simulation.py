@@ -548,6 +548,10 @@ def _resolve_attack(
             fifth_dan_combat_bonus = attacker_fighter.fifth_dan_void_bonus(atk_void_spend)
             total += fifth_dan_combat_bonus
 
+            sa_bonus, sa_note = attacker_fighter.sa_attack_bonus(phase, consumed_die)
+            if sa_bonus > 0:
+                total += sa_bonus
+
             success = total >= tn
             void_note = f" ({atk_void_label})"
             fifth_note = attacker_fighter.fifth_dan_void_description(fifth_dan_combat_bonus)
@@ -565,6 +569,7 @@ def _resolve_attack(
                     f"{attacker_name} attacks: "
                     f"{_format_pool_with_overflow(atk_rolled, atk_kept)}"
                     f" vs TN {tn}{void_note}{fifth_note}"
+                    f"{sa_note}"
                 ),
                 dice_pool=_format_pool_with_overflow(atk_rolled, atk_kept),
             )
@@ -575,6 +580,11 @@ def _resolve_attack(
             )
             attack_action.phase = phase
             attack_action.target = defender_name
+            sa_bonus, sa_note = attacker_fighter.sa_attack_bonus(phase, consumed_die)
+            if sa_bonus > 0:
+                attack_action.total += sa_bonus
+                attack_action.success = attack_action.total >= tn
+                attack_action.description += sa_note
         total_attack_void = atk_void_spend
 
     # School technique reroll on attack (e.g. Hida 3rd Dan)
@@ -724,13 +734,10 @@ def _resolve_attack(
         # Pre-declared: die already consumed, always parry
         can_parry = True
     elif has_action_in_phase and def_parry_rank > 0:
-        if parry_auto_succeeds:
-            can_parry = True
-        else:
-            can_parry = defender_fighter.should_reactive_parry(
-                attack_action.total, tn,
-                attacker_weapon.rolled, attacker.rings.fire.value,
-            )
+        can_parry = defender_fighter.should_reactive_parry(
+            attack_action.total, tn,
+            attacker_weapon.rolled, attacker.rings.fire.value,
+        )
     elif not has_action_in_phase and def_parry_rank > 0:
         # Phase-shift parry (e.g. Mirumoto 3rd Dan)
         can_shift, shift_cost, shift_die = defender_fighter.can_phase_shift_parry(phase)
@@ -745,19 +752,13 @@ def _resolve_attack(
         and len(defender_fighter.actions_remaining) >= interrupt_cost
         and def_parry_rank > 0
     ):
-        if parry_auto_succeeds:
-            extra_dice = max(0, (attack_action.total - (base_tn if is_double_attack else tn)) // 5)
-            damage_rolled = attacker_weapon.rolled + attacker.rings.fire.value + extra_dice
-            can_parry = damage_rolled > 6
-            is_interrupt = can_parry
-        else:
-            should_interrupt = defender_fighter.should_interrupt_parry(
-                attack_action.total, tn,
-                attacker_weapon.rolled, attacker.rings.fire.value,
-            )
-            if should_interrupt:
-                can_parry = True
-                is_interrupt = True
+        should_interrupt = defender_fighter.should_interrupt_parry(
+            attack_action.total, tn,
+            attacker_weapon.rolled, attacker.rings.fire.value,
+        )
+        if should_interrupt:
+            can_parry = True
+            is_interrupt = True
 
     parry_die_value = 0  # Track which die was spent on parry (for SA bonus)
     if can_parry and def_parry_rank > 0:
@@ -1140,6 +1141,12 @@ def _resolve_attack(
         damage_action.description += (
             f" (SA: +{sa_dmg_rolled}k{sa_dmg_kept} from void on attack)"
         )
+
+    # SA flat damage bonus (e.g. Courtier adds Air to damage)
+    sa_dmg_flat, sa_dmg_flat_note = attacker_fighter.sa_damage_flat_bonus()
+    if sa_dmg_flat > 0:
+        damage_action.total += sa_dmg_flat
+        damage_action.description += sa_dmg_flat_note
 
     # Ability 4: Damage rounding — via Fighter hook
     damage_total, rounding_note = attacker_fighter.damage_rounding(damage_action.total)

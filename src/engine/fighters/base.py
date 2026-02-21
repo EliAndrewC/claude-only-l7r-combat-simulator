@@ -234,6 +234,10 @@ class Fighter:
         """
         return 0, 0
 
+    def sa_damage_flat_bonus(self) -> tuple[int, str]:
+        """Flat bonus added to damage total from SA (default 0)."""
+        return 0, ""
+
     # -- Wound check overrides ------------------------------------------
 
     def wound_check_serious_lw(self, light_wounds: int) -> int:

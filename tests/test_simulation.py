@@ -1828,10 +1828,13 @@ class TestWaveManInitiative:
 
 
 class TestWaveManAttackReroll:
-    """Ability 1: Free raise on miss, auto-parry."""
+    """Ability 1: Free raise on miss, parry auto-succeeds on roll."""
 
     def test_ability1_raises_missed_attack(self) -> None:
-        """Ability 1 rank 1 adds +5 to a missed attack. Defender auto-parries if they have a die."""
+        """Ability 1 rank 1 adds +5 to a missed attack.
+
+        Defender decides via heuristic; parry auto-succeeds.
+        """
         a = _make_waveman("WM", abilities=[(1, 1)], fire=3, earth=3, void=2)
         b = _make_character("Def", fire=2, earth=3, air=3, void=2)
         b.skills = [
@@ -1933,7 +1936,7 @@ class TestWaveManAttackReroll:
             attack_actions = [a for a in log.actions if a.action_type == ActionType.ATTACK]
             assert attack_actions[0].success is True
 
-            # No parry — damage_rolled (6) <= 6, not worth interrupt even with auto-success
+            # No parry — damage_rolled (6) < 10, heuristic declines interrupt
             parry_actions = [
                 a for a in log.actions
                 if a.action_type in (ActionType.PARRY, ActionType.INTERRUPT)
@@ -6552,3 +6555,213 @@ class TestShinjoSkipPredeclareWithTwoDice:
         # (predeclare would have still consumed a die even on a miss)
         if attack_actions and not attack_actions[0].success:
             assert len(parry_actions) == 0
+
+
+# ---------------------------------------------------------------------------
+# parry_auto_succeeds respects fighter parry decision
+# ---------------------------------------------------------------------------
+
+
+def _make_courtier(
+    name: str = "Courtier",
+    knack_rank: int = 1,
+    attack_rank: int = 3,
+    parry_rank: int = 2,
+    tact_rank: int = 5,
+    **ring_overrides: int,
+) -> Character:
+    """Create a Courtier character for simulation tests."""
+    kwargs = {}
+    for ring_name in ["air", "fire", "earth", "water", "void"]:
+        val = ring_overrides.get(ring_name, 2)
+        kwargs[ring_name] = Ring(name=RingName(ring_name.capitalize()), value=val)
+    return Character(
+        name=name,
+        rings=Rings(**kwargs),
+        school="Courtier",
+        school_ring=RingName.AIR,
+        school_knacks=["Discern Honor", "Oppose Social", "Worldliness"],
+        skills=[
+            Skill(
+                name="Attack", rank=attack_rank,
+                skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Parry", rank=parry_rank,
+                skill_type=SkillType.ADVANCED, ring=RingName.AIR,
+            ),
+            Skill(
+                name="Tact", rank=tact_rank,
+                skill_type=SkillType.BASIC, ring=RingName.AIR,
+            ),
+            Skill(
+                name="Discern Honor", rank=knack_rank,
+                skill_type=SkillType.BASIC, ring=RingName.AIR,
+            ),
+            Skill(
+                name="Oppose Social", rank=knack_rank,
+                skill_type=SkillType.BASIC, ring=RingName.AIR,
+            ),
+            Skill(
+                name="Worldliness", rank=knack_rank,
+                skill_type=SkillType.BASIC, ring=RingName.AIR,
+            ),
+        ],
+    )
+
+
+def _make_shiba(
+    name: str = "Shiba",
+    knack_rank: int = 1,
+    attack_rank: int = 3,
+    parry_rank: int = 2,
+    **ring_overrides: int,
+) -> Character:
+    """Create a Shiba Bushi character for simulation tests."""
+    kwargs = {}
+    for ring_name in ["air", "fire", "earth", "water", "void"]:
+        val = ring_overrides.get(ring_name, 2)
+        kwargs[ring_name] = Ring(name=RingName(ring_name.capitalize()), value=val)
+    return Character(
+        name=name,
+        rings=Rings(**kwargs),
+        school="Shiba Bushi",
+        school_ring=RingName.AIR,
+        school_knacks=["Counterattack", "Double Attack", "Iaijutsu"],
+        skills=[
+            Skill(
+                name="Attack", rank=attack_rank,
+                skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Parry", rank=parry_rank,
+                skill_type=SkillType.ADVANCED, ring=RingName.AIR,
+            ),
+            Skill(
+                name="Counterattack", rank=knack_rank,
+                skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Double Attack", rank=knack_rank,
+                skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+            ),
+            Skill(
+                name="Iaijutsu", rank=knack_rank,
+                skill_type=SkillType.ADVANCED, ring=RingName.VOID,
+            ),
+        ],
+    )
+
+
+class TestParryAutoSucceedsRespectsDecision:
+    """parry_auto_succeeds should only skip the roll, not bypass the fighter's
+    parry decision heuristic."""
+
+    def test_courtier_declines_parry_despite_auto_succeed(self) -> None:
+        """A healthy Courtier's should_reactive_parry returns False, so even
+        with parry_auto_succeeds the Courtier should NOT parry."""
+        a = _make_waveman("WM", abilities=[(1, 1)], fire=3, earth=3, void=2)
+        b = _make_courtier("Def", earth=3, air=3, void=2)
+
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        # Defender has a die in phase 5 so reactive path is available
+        actions_remaining = {"WM": [5], "Def": [5]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            # TN=15, total=12 misses. Ability 1 adds +5 → 17 >= 15, hits.
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[12], dice_kept=[12],
+                total=12, tn=15, success=False,
+                description="WM attacks: 6k3 vs TN 15",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="WM deals 18 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack_compat(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            # Attack should hit via ability 1
+            attack_actions = [
+                a for a in log.actions if a.action_type == ActionType.ATTACK
+            ]
+            assert attack_actions[0].success is True
+            assert "on miss" in attack_actions[0].description.lower()
+
+            # Courtier should NOT parry — healthy, heuristic returns False
+            parry_actions = [
+                a for a in log.actions
+                if a.action_type in (ActionType.PARRY, ActionType.INTERRUPT)
+            ]
+            assert len(parry_actions) == 0
+
+    def test_shiba_parry_auto_succeeds_when_heuristic_accepts(self) -> None:
+        """A Shiba always reactive-parries. With parry_auto_succeeds the parry
+        should auto-succeed without rolling."""
+        a = _make_waveman("WM", abilities=[(1, 1)], fire=3, earth=3, void=2)
+        b = _make_shiba("Def", earth=3, air=3, void=2)
+
+        log = create_combat_log(["WM", "Def"], [3, 3])
+        fighters = {
+            "WM": {"char": a, "weapon": KATANA},
+            "Def": {"char": b, "weapon": KATANA},
+        }
+        # Defender has a die in phase 5 so reactive path is available
+        actions_remaining = {"WM": [5], "Def": [5]}
+        void_points = {"WM": 2, "Def": 2}
+
+        from src.models.combat import CombatAction
+
+        with patch("src.engine.simulation.roll_attack") as mock_attack, \
+             patch("src.engine.simulation.roll_damage") as mock_damage, \
+             patch("src.engine.simulation.make_wound_check") as mock_wc:
+            # TN=15, total=12 misses. Ability 1 adds +5 → 17 >= 15, hits.
+            mock_attack.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.ATTACK,
+                dice_rolled=[12], dice_kept=[12],
+                total=12, tn=15, success=False,
+                description="WM attacks: 6k3 vs TN 15",
+            )
+            mock_damage.return_value = CombatAction(
+                phase=5, actor="WM", action_type=ActionType.DAMAGE,
+                dice_rolled=[10, 8], dice_kept=[10, 8],
+                total=18, description="WM deals 18 damage",
+                dice_pool="7k2",
+            )
+            mock_wc.return_value = (True, 25, [15, 10], [15, 10])
+
+            _resolve_attack_compat(
+                log, 5, fighters["WM"], fighters["Def"],
+                "WM", "Def", fighters, actions_remaining, void_points,
+            )
+
+            # Attack should hit via ability 1
+            attack_actions = [
+                a for a in log.actions if a.action_type == ActionType.ATTACK
+            ]
+            assert attack_actions[0].success is True
+            assert "on miss" in attack_actions[0].description.lower()
+
+            # Shiba should parry and it should auto-succeed
+            parry_actions = [
+                a for a in log.actions if a.action_type == ActionType.PARRY
+            ]
+            assert len(parry_actions) == 1
+            assert parry_actions[0].success is True
+            assert "auto-success" in parry_actions[0].description.lower()

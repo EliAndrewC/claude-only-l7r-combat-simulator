@@ -787,6 +787,16 @@ class TestDanPointsUI:
         assert "(3rd dan: +4 bonus, 2 pts)" in result
 
 
+class TestCourtierAnnotation:
+    """Tests for Courtier annotation display."""
+
+    def test_courtier_sa_annotation_extracted(self) -> None:
+        """extract_annotations picks up courtier SA damage bonus text."""
+        desc = "Courtier deals 25 damage (10k2) (courtier SA: +6 damage)"
+        result = extract_annotations(desc)
+        assert "(courtier SA: +6 damage)" in result
+
+
 class TestLungeActionSequence:
     """Tests for Lunge action type in grouping and display."""
 

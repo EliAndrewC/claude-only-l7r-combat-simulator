@@ -854,6 +854,55 @@ class TestTryCancelBeforeDamageEdgeCases:
         assert fighter._counterattack_used_this_round is True
 
 
+class TestCounterattack3rdDanFreeRaises:
+    """3rd Dan: Free raises in _resolve_monk_counterattack (lines 91-97)."""
+
+    def test_free_raises_bridge_cancel_deficit(self) -> None:
+        """3rd Dan: Spend free raises to bridge cancel deficit."""
+        from unittest.mock import patch
+
+        from src.engine.fighters.brotherhood_monk import _resolve_monk_counterattack
+
+        monk_char = _make_monk(
+            knack_rank=3, attack_rank=3, fire=2, precepts_rank=5,
+        )
+        opp = _make_generic(parry_rank=0)
+        state = _make_state(monk_char, opp)
+
+        monk_ctx = state.fighters[monk_char.name]
+        assert monk_ctx._free_raises == 10
+
+        call_count = [0]
+
+        def mock_roll_and_keep(
+            rolled: int, kept: int, explode: bool = True,
+        ) -> tuple:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # Attack roll: return total lower than attacker's total (20)
+                # so that cancel_deficit > 0 and free raises are needed
+                return [6, 5, 4], [6, 5], 11
+            # Damage roll
+            return [5, 3], [5, 3], 8
+
+        with patch(
+            "src.engine.fighters.brotherhood_monk.roll_and_keep",
+            side_effect=mock_roll_and_keep,
+        ), patch(
+            "src.engine.fighters.brotherhood_monk.make_wound_check",
+            return_value=(True, 35, [20, 15], [20, 15]),
+        ):
+            canceled, margin = _resolve_monk_counterattack(
+                state, monk_char.name, opp.name, 3, 5,
+                attacker_attack_total=20,
+            )
+
+        # Free raises should have been spent to bridge the deficit
+        # Attack total was 11 + 5 (2nd Dan) = 16, attacker total = 20
+        # Deficit = 20 - 16 = 4, needs 1 raise (+5)
+        assert monk_ctx._free_raises < 10
+
+
 class TestFactoryRegistration:
     """Brotherhood Monk creates via fighter factory."""
 

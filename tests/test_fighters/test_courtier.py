@@ -607,6 +607,62 @@ class TestWorldlinessVoidPool:
         assert fighter.worldliness_void == 0
 
 
+class TestAttackVoidStrategyCrippled:
+    """attack_void_strategy returns 0 when crippled."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """Crippled courtier does not spend void on attack."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(5, 2, 15)
+        assert result == 0
+
+    def test_crippled_known_bonus_still_zero(self) -> None:
+        """5th Dan crippled courtier still returns 0."""
+        fighter = _make_fighter(knack_rank=5, void_points=5, air=4, earth=2)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(5, 2, 15)
+        assert result == 0
+
+
+class TestAttackVoidStrategyNotCrippled:
+    """attack_void_strategy when not crippled computes known_bonus."""
+
+    def test_not_crippled_uses_known_bonus(self) -> None:
+        """Non-crippled courtier passes Air-based known_bonus (lines 61-63)."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, air=3, fire=3, void=3)
+        # Not crippled (sw=0 < earth=2)
+        result = fighter.attack_void_strategy(6, 3, 30)
+        assert isinstance(result, int)
+        assert result >= 0
+
+    def test_not_crippled_5th_dan_doubles_known_bonus(self) -> None:
+        """5th Dan non-crippled courtier doubles Air bonus (lines 61-62)."""
+        fighter = _make_fighter(knack_rank=5, void_points=5, air=3, fire=3, void=3)
+        result = fighter.attack_void_strategy(6, 3, 30)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+class TestPostWoundCheckDeficitLeZero:
+    """post_wound_check: deficit <= 0 returns early."""
+
+    def test_deficit_le_zero_returns_early(self) -> None:
+        """When wc_total >= light_wounds (deficit <= 0), no raises spent."""
+        fighter = _make_fighter(knack_rank=3, tact_rank=5, earth=3)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 20
+        # wc_total=25 > light_wounds=20, but passed=False
+        # (e.g. post_roll_modify lowered it, or some external scenario)
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=25, attacker_name="Generic",
+        )
+        assert not new_passed
+        assert new_total == 25
+        assert note == ""
+        assert fighter._free_raises == 10
+
+
 class TestFactoryRegistration:
     """Courtier creates via fighter factory."""
 

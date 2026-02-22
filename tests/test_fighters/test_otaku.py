@@ -537,6 +537,96 @@ class TestOtakuParryReluctance:
         )
 
 
+class TestOtakuAttackChoiceCrippled:
+    """_otaku_attack_choice returns 'lunge' when crippled (line 23)."""
+
+    def test_crippled_returns_lunge(self) -> None:
+        """When crippled, always choose lunge regardless of DA rank."""
+        from src.engine.fighters.otaku import _otaku_attack_choice
+        result = _otaku_attack_choice(
+            lunge_rank=3,
+            double_attack_rank=5,
+            fire_ring=3,
+            defender_parry=2,
+            dan=3,
+            is_crippled=True,
+        )
+        assert result == "lunge"
+
+
+class TestConsumeAttackDiePendingNotInActions:
+    """consume_attack_die returns None when pending die not found (line 79)."""
+
+    def test_pending_die_not_in_actions(self) -> None:
+        """When pending die is not in actions_remaining, return None (line 79)."""
+        fighter = _make_fighter(knack_rank=1)
+        fighter.actions_remaining = [3, 5]
+        fighter._pending_die = 9  # Not in actions
+        result = fighter.consume_attack_die(3)
+        assert result is None
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_consume_die_fallback_not_in_actions(self) -> None:
+        """When phase is not in actions_remaining, return None (line 83)."""
+        fighter = _make_fighter(knack_rank=1)
+        fighter.actions_remaining = [3, 5]
+        result = fighter.consume_attack_die(7)
+        assert result is None
+        assert fighter.actions_remaining == [3, 5]
+
+
+class TestPostDamageEffectAtkRankZero:
+    """post_damage_effect when atk_rank <= 0 (line 212)."""
+
+    def test_atk_rank_zero_returns_empty(self) -> None:
+        """When Attack skill is absent/rank=0, returns ''."""
+        fighter = _make_fighter(knack_rank=3, attack_rank=0)
+        result = fighter.post_damage_effect("Generic")
+        assert result == ""
+
+
+class TestCounterLungeAttackerMortally:
+    """resolve_post_attack_interrupt when attacker is mortally wounded (line 266)."""
+
+    def test_no_counter_lunge_when_attacker_mortally_wounded(self) -> None:
+        """No counter-lunge when attacker is mortally wounded (line 266)."""
+        fighter = _make_fighter(knack_rank=3, earth=2)
+        fighter.actions_remaining = [3, 5]
+        attacker_wounds = fighter.state.log.wounds["Generic"]
+        attacker_wounds.serious_wounds = 4  # 2 * earth(2) = mortally wounded
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        # Should not consume any die
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_no_counter_lunge_when_self_mortally_wounded(self) -> None:
+        """No counter-lunge when self is mortally wounded."""
+        fighter = _make_fighter(knack_rank=3, earth=2)
+        fighter.actions_remaining = [3, 5]
+        own_wounds = fighter.state.log.wounds[fighter.name]
+        own_wounds.serious_wounds = 4
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        assert fighter.actions_remaining == [3, 5]
+
+
+class TestCounterLungeRecursionGuard:
+    """resolve_post_attack_interrupt recursion guard (line 256)."""
+
+    def test_recursion_guard_prevents_counter(self) -> None:
+        """When _in_counter_lunge is True, no-op (line 256)."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = [3, 5]
+        fighter._in_counter_lunge = True
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_no_counter_lunge_when_no_dice(self) -> None:
+        """No counter-lunge when no action dice remaining."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = []
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        assert fighter.actions_remaining == []
+
+
 class TestFactoryCreatesOtaku:
     """create_fighter returns OtakuFighter for Otaku Bushi."""
 

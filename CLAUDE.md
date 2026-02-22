@@ -16,7 +16,6 @@ This will eventually involve:
 
 ## Tech Stack
 - Language: Python 3.12+
-- API: FastAPI
 - UI: Streamlit (Internal simulation dashboard)
 - Testing: pytest, pytest-cov
 - Style: PEP 8, Type Hints (Strict)
@@ -24,7 +23,7 @@ This will eventually involve:
 ## Architecture
 1. **Core Engine**: Pure logic, implemented based on `./rules`, which has the human-readable rules
 2. **Simulation**: Handles initiative, attacking, parrying, special actions, damage, wounds, win conditions, etc.
-3. **API/UI**: Streamlit interface to visualize the dice rolls and outcomes.
+3. **UI**: Streamlit interface to visualize the dice rolls and outcomes.
 
 ## Development Commands
 - Run Tests: `pytest`

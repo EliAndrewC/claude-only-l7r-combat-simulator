@@ -470,6 +470,82 @@ class TestParryDecisions:
         ) is True
 
 
+class TestPostInitiativeDescriptionEdgeCases:
+    """post_initiative_description edge cases."""
+
+    def test_below_4th_dan_returns_empty(self) -> None:
+        """Before 4th Dan, no description for initiative (line 67)."""
+        fighter = _make_fighter(knack_rank=3)
+        old_actions = [3, 7]
+        desc = fighter.post_initiative_description(old_actions, old_actions)
+        assert desc == ""
+
+    def test_duplicate_value_branch(self) -> None:
+        """When added die duplicates existing value (line 62).
+
+        If new_actions has a duplicate of an old value, the simple
+        list comprehension misses it and falls back to new_actions[-1].
+        """
+        fighter = _make_fighter(knack_rank=4)
+        old_actions = [3, 7]
+        new_actions = [3, 7, 7]  # Extra die is 7 (duplicate)
+        desc = fighter.post_initiative_description(old_actions, new_actions)
+        assert "parry-only" in desc
+        assert "phase 7" in desc
+
+
+class TestAttackVoidStrategyCrippled:
+    """attack_void_strategy returns 0 when crippled (lines 103-106)."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """Crippled Kuni does not spend void on attack."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(5, 2, 15)
+        assert result == 0
+
+    def test_not_crippled_delegates(self) -> None:
+        """Non-crippled Kuni delegates to standard heuristic."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, fire=3, void=3)
+        result = fighter.attack_void_strategy(6, 3, 30)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+class TestPostWoundCheckDeficitLeZero:
+    """post_wound_check: deficit <= 0 returns early (line 171)."""
+
+    def test_deficit_le_zero_returns_early(self) -> None:
+        """When wc_total >= light_wounds, no raises spent."""
+        fighter = _make_fighter(knack_rank=3, investigation_rank=5, earth=3)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 20
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=25, attacker_name="Generic",
+        )
+        assert not new_passed
+        assert new_total == 25
+        assert note == ""
+        assert fighter._free_raises == 10
+
+
+class TestPostWoundCheckBestSpendZero:
+    """post_wound_check: best_spend <= 0 returns early (line 195)."""
+
+    def test_best_spend_zero_returns_early(self) -> None:
+        """When spending raises cannot reduce SW, returns early."""
+        fighter = _make_fighter(knack_rank=3, investigation_rank=1, earth=5)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 50
+        wound_tracker.serious_wounds = 1
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=46, attacker_name="Generic",
+            sw_before_wc=0,
+        )
+        assert note == ""
+        assert fighter._free_raises == 2
+
+
 class TestFactoryRegistration:
     """Kuni Witch Hunter creates via fighter factory."""
 

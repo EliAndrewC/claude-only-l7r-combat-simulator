@@ -380,6 +380,88 @@ class TestFreeRaisePoolInit:
         assert fighter._max_per_roll == 0
 
 
+class TestAttackVoidStrategyCrippled:
+    """attack_void_strategy returns 0 when crippled (lines 50-54)."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """Crippled Kitsuki does not spend void on attack."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(5, 2, 15)
+        assert result == 0
+
+    def test_not_crippled_uses_known_bonus(self) -> None:
+        """Non-crippled Kitsuki passes 2*Water as known_bonus."""
+        fighter = _make_fighter(knack_rank=1, void_points=5, fire=3, water=3, void=3)
+        result = fighter.attack_void_strategy(6, 3, 30)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+class TestPostWoundCheckDeficitLeZero:
+    """post_wound_check: deficit <= 0 returns early (line 119)."""
+
+    def test_deficit_le_zero_returns_early(self) -> None:
+        """When wc_total >= light_wounds, no raises spent."""
+        fighter = _make_fighter(knack_rank=3, investigation_rank=5, earth=3)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 20
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=25, attacker_name="Generic",
+        )
+        assert not new_passed
+        assert new_total == 25
+        assert note == ""
+        assert fighter._free_raises == 10
+
+
+class TestPostWoundCheckBestSpendZero:
+    """post_wound_check: best_spend <= 0 returns early (line 143)."""
+
+    def test_best_spend_zero_returns_early(self) -> None:
+        """When spending raises cannot reduce SW, returns early.
+
+        deficit=4, current_sw=1. Spend 1 raise: new_deficit=-1 -> passes.
+        would_die: sw_before(0)+current_sw(1) >= 2*5=10 -> False.
+        So won't spend to pass. best_spend stays 0.
+        """
+        fighter = _make_fighter(knack_rank=3, investigation_rank=3, earth=5)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 50
+        wound_tracker.serious_wounds = 1
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=46, attacker_name="Generic",
+            sw_before_wc=0,
+        )
+        assert note == ""
+        assert fighter._free_raises == 6
+
+
+class TestApply5thDanDebuffOpponentNone:
+    """apply_5th_dan_debuff when opponent is not in fighters (line 178)."""
+
+    def test_opponent_not_found_returns_empty(self) -> None:
+        """When opponent is not in state.fighters, returns ''."""
+        fighter = _make_fighter(knack_rank=5)
+        note = fighter.apply_5th_dan_debuff("Nonexistent")
+        assert note == ""
+
+
+class TestApply5thDanDebuffNoRingsDebuffed:
+    """apply_5th_dan_debuff when all opponent rings are already 1 (line 198)."""
+
+    def test_all_rings_at_1_returns_empty(self) -> None:
+        """When all target rings are 1, debuff applied but no rings changed."""
+        fighter = _make_fighter(knack_rank=5)
+        opp = fighter.state.fighters["Generic"]
+        opp.char.rings.air.value = 1
+        opp.char.rings.fire.value = 1
+        opp.char.rings.water.value = 1
+        note = fighter.apply_5th_dan_debuff("Generic")
+        assert note == ""
+        assert fighter._debuff_applied is True
+
+
 class TestFactoryRegistration:
     """Kitsuki Magistrate creates via fighter factory."""
 

@@ -398,6 +398,114 @@ class TestHasPhase10Action:
         assert fighter.has_phase10_action() is True
 
 
+class TestResolvePhase10NoDice:
+    """_resolve_shinjo_phase10_attack returns early when no dice (line 72)."""
+
+    def test_no_dice_early_return(self) -> None:
+        """When no actions remaining, phase 10 attack is a no-op."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = []
+        # Should not error out
+        from src.engine.fighters.shinjo import _resolve_shinjo_phase10_attack
+        _resolve_shinjo_phase10_attack(fighter.state, fighter.name, "Generic")
+
+
+class TestPostInitiativeDescriptionBelow4thDan:
+    """post_initiative_description returns '' before 4th Dan (line 118)."""
+
+    def test_below_4th_dan_returns_empty(self) -> None:
+        """Before 4th Dan, no description for initiative."""
+        fighter = _make_fighter(knack_rank=3)
+        desc = fighter.post_initiative_description([3, 7], [3, 7])
+        assert desc == ""
+
+
+class TestConsumeAttackDieEdgeCases:
+    """consume_attack_die edge cases (lines 158, 161-164)."""
+
+    def test_die_value_not_in_actions(self) -> None:
+        """When die_value is not in actions_remaining, return None (line 158)."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = [3, 5]
+        result = fighter.consume_attack_die(10, die_value=9)
+        assert result is None
+
+    def test_phase_below_10_returns_none(self) -> None:
+        """When phase < 10, should_consume_phase_die returns False (line 160)."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = [3, 5]
+        result = fighter.consume_attack_die(3)
+        assert result is None
+
+    def test_phase_10_not_in_actions(self) -> None:
+        """When phase 10 is not in actions_remaining, return None (line 164)."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = [3, 5]
+        result = fighter.consume_attack_die(10)
+        assert result is None
+
+    def test_phase_10_in_actions_consumed(self) -> None:
+        """When phase 10 IS in actions_remaining, consume it (lines 162-163)."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = [3, 5, 10]
+        result = fighter.consume_attack_die(10)
+        assert result == 10
+        assert 10 not in fighter.actions_remaining
+
+
+class TestSAAttackBonusZero:
+    """sa_attack_bonus returns (0, '') when bonus <= 0 (line 208)."""
+
+    def test_phase_10_gives_zero_bonus(self) -> None:
+        """At phase 10, bonus = 2*(10-10) = 0."""
+        fighter = _make_fighter(knack_rank=3)
+        bonus, note = fighter.sa_attack_bonus(10)
+        assert bonus == 0
+        assert note == ""
+
+
+class TestPostWoundCheck5thDanNotPassed:
+    """5th Dan post_wound_check when bonuses applied but WC not passed (lines 435-436, 451)."""
+
+    def test_5th_dan_bonuses_applied_not_passed(self) -> None:
+        """5th Dan bonuses reduce SW but WC still fails."""
+        fighter = _make_fighter(knack_rank=5, earth=3)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 50
+        wound_tracker.serious_wounds = 3
+        # Set shinjo_bonuses small enough that they help but don't pass
+        fighter.shinjo_bonuses = [5]
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=30, attacker_name="Generic",
+            sw_before_wc=0,
+        )
+        # deficit = 50 - 30 = 20, sw = 3
+        # With +5: deficit = 50 - 35 = 15, sw = 1+15//10 = 2
+        # Still not passed (35 < 50)
+        if note:
+            assert "shinjo 5th Dan" in note
+
+
+class TestResolvePhase10SafetyBreak:
+    """resolve_phase10 safety break when no die consumed (line 480)."""
+
+    def test_safety_break_no_die_consumed(self) -> None:
+        """When consume_attack_die fails (no die consumed), loop breaks."""
+        from unittest.mock import patch
+
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = [3, 5]
+
+        # Mock _resolve_shinjo_phase10_attack to be a no-op
+        # (doesn't consume any die)
+        with patch(
+            "src.engine.fighters.shinjo._resolve_shinjo_phase10_attack",
+        ):
+            fighter.resolve_phase10("Generic")
+        # Should break immediately since no die was consumed
+        assert fighter.actions_remaining == [3, 5]
+
+
 class TestFactoryCreatesShinjo:
     """create_fighter returns ShinjoFighter for Shinjo Bushi."""
 

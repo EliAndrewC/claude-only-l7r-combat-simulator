@@ -456,6 +456,74 @@ class TestParryDecisions:
         ) is True
 
 
+class TestAttackVoidStrategyCrippled:
+    """attack_void_strategy returns 0 when crippled (lines 52-55)."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """Crippled Shosuro does not spend void on attack."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(5, 2, 15)
+        assert result == 0
+
+    def test_not_crippled_delegates(self) -> None:
+        """Non-crippled Shosuro delegates to standard heuristic."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, fire=3, void=3)
+        result = fighter.attack_void_strategy(6, 3, 30)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+class TestPostRollModifyFewDice:
+    """post_roll_modify 5th Dan with fewer than 3 dice returns early (line 87-89)."""
+
+    def test_fewer_than_3_dice_returns_early(self) -> None:
+        """When len(all_dice) < 3, returns early without adding bonus."""
+        fighter = _make_fighter(knack_rank=5, acting_rank=2)
+        all_dice = [8, 9]
+        result = fighter.post_roll_modify(
+            all_dice, 1, 17, 15, "attack", explode=True,
+        )
+        # Returns early because len(all_dice) < 3
+        assert result[2] == 17  # total unchanged
+
+
+class TestPostWoundCheckDeficitLeZero:
+    """post_wound_check: deficit <= 0 returns early (line 149)."""
+
+    def test_deficit_le_zero_returns_early(self) -> None:
+        """When wc_total >= light_wounds, no raises spent."""
+        fighter = _make_fighter(knack_rank=3, acting_rank=5, sincerity_rank=5, earth=3)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 20
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=25, attacker_name="Generic",
+        )
+        assert not new_passed
+        assert new_total == 25
+        assert note == ""
+        assert fighter._free_raises == 10
+
+
+class TestPostWoundCheckBestSpendZero:
+    """post_wound_check: best_spend <= 0 returns early (line 173)."""
+
+    def test_best_spend_zero_returns_early(self) -> None:
+        """When spending raises cannot reduce SW, returns early."""
+        fighter = _make_fighter(
+            knack_rank=3, acting_rank=1, sincerity_rank=1, earth=5,
+        )
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 50
+        wound_tracker.serious_wounds = 1
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=46, attacker_name="Generic",
+            sw_before_wc=0,
+        )
+        assert note == ""
+        assert fighter._free_raises == 2
+
+
 class TestFactoryRegistration:
     """Shosuro Actor creates via fighter factory."""
 

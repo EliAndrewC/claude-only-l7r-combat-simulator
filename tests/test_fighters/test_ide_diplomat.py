@@ -396,6 +396,65 @@ class TestWoundCheck:
         assert fighter.wound_check_extra_rolled() == 0
 
 
+# -- TestChooseAttackDefenderNone --
+
+class TestChooseAttackDefenderNone:
+    """choose_attack when defender is not found in fighters (line 92)."""
+
+    def test_defender_not_found_uses_default_tn(self) -> None:
+        """When defender is not in state.fighters, TN defaults to 15."""
+        fighter, state = _setup(knack_rank=2, fire=1)
+        fighter.actions_remaining = [3, 5]
+        # Remove defender from fighters dict to trigger line 92
+        del state.fighters["Generic"]
+        attack_type, _ = fighter.choose_attack("Generic", 3)
+        assert attack_type in ("feint", "double_attack", "attack")
+
+
+# -- TestAttackVoidStrategyCrippled --
+
+class TestAttackVoidStrategyCrippled:
+    """attack_void_strategy returns 0 when crippled (lines 109-112)."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """Crippled Ide Diplomat does not spend void on attack."""
+        fighter, _ = _setup(knack_rank=3, void_points=5)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(5, 2, 15)
+        assert result == 0
+
+    def test_not_crippled_delegates(self) -> None:
+        """Non-crippled Ide Diplomat delegates to heuristic."""
+        fighter, _ = _setup(knack_rank=3, void_points=5, fire=3, void=3)
+        result = fighter.attack_void_strategy(6, 3, 30)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+# -- TestPenalizeWoundCheckEdgeCases --
+
+class TestPenalizeWoundCheckEdgeCases:
+    """penalize_opponent_wound_check edge cases (lines 185, 191)."""
+
+    def test_no_penalty_when_low_void(self) -> None:
+        """No penalty when total_void <= 1 (line 185)."""
+        fighter, _ = _setup(knack_rank=3, void_points=1)
+        fighter.temp_void = 0
+        fighter.worldliness_void = 0
+        penalty, note = fighter.penalize_opponent_wound_check(22, 20, "Generic")
+        assert penalty == 0
+        assert note == ""
+
+    def test_no_penalty_when_large_margin(self) -> None:
+        """No penalty when margin >= expected_penalty * 1.5 (line 191)."""
+        fighter, _ = _setup(knack_rank=3, void_points=5, tact_rank=1)
+        # tact_rank=1 -> estimate_roll(1,1) ~ 6.5, 1.5*6.5 ~ 9.75
+        # margin = 35-20 = 15 >= 9.75 -> skip
+        penalty, note = fighter.penalize_opponent_wound_check(35, 20, "Generic")
+        assert penalty == 0
+        assert note == ""
+
+
 # -- TestFactoryRegistration --
 
 class TestFactoryRegistration:

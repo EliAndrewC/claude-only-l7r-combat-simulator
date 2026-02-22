@@ -378,6 +378,50 @@ class TestShouldPredeclareParry:
         assert result is False
 
 
+class TestShouldUseDoubleAttackCrippled:
+    """_should_use_double_attack returns False when crippled (line 30)."""
+
+    def test_crippled_returns_false(self) -> None:
+        """When crippled, _should_use_double_attack returns (False, 0)."""
+        from src.engine.fighters.mirumoto import _should_use_double_attack
+        result, void_spend = _should_use_double_attack(
+            double_attack_rank=5,
+            attack_skill=3,
+            fire_ring=3,
+            defender_parry=2,
+            void_available=5,
+            max_void_spend=2,
+            dan=3,
+            is_crippled=True,
+        )
+        assert result is False
+        assert void_spend == 0
+
+
+class TestPostParryEffectDescriptionNoVoid:
+    """post_parry_effect_description when temp_void_delta <= 0 (line 261)."""
+
+    def test_no_void_gained_returns_empty(self) -> None:
+        """When temp_void_delta <= 0, returns ''."""
+        fighter = _make_fighter(knack_rank=3)
+        desc = fighter.post_parry_effect_description(
+            temp_void_delta=0,
+            actions_changed=False,
+            bonus_stored=None,
+        )
+        assert desc == ""
+
+    def test_negative_void_delta_returns_empty(self) -> None:
+        """When temp_void_delta < 0, returns ''."""
+        fighter = _make_fighter(knack_rank=3)
+        desc = fighter.post_parry_effect_description(
+            temp_void_delta=-1,
+            actions_changed=False,
+            bonus_stored=None,
+        )
+        assert desc == ""
+
+
 class TestFactoryCreatesMirumoto:
     """create_fighter returns MirumotoFighter for Mirumoto Bushi."""
 

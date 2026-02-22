@@ -341,6 +341,24 @@ class TestWorldlinessVoid:
         assert fighter.worldliness_void == 5
 
 
+class TestAttackVoidStrategyCrippled:
+    """attack_void_strategy returns 0 when crippled."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """Crippled Togashi does not spend void on attack."""
+        fighter = _make_fighter(knack_rank=3, void_points=5)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(5, 2, 15)
+        assert result == 0
+
+    def test_not_crippled_may_spend(self) -> None:
+        """Non-crippled Togashi may spend void on attack."""
+        fighter = _make_fighter(knack_rank=1, void_points=5, fire=3, void=3)
+        result = fighter.attack_void_strategy(6, 3, 30)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
 class TestFactoryRegistration:
     """Togashi Ise Zumi creates via fighter factory."""
 

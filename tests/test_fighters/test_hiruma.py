@@ -371,6 +371,37 @@ class TestDamageReduction5thDan:
         assert "hiruma 5th Dan" in note
 
 
+class TestChooseAttackCrippled:
+    """choose_attack returns 'attack' when crippled."""
+
+    def test_crippled_returns_attack(self) -> None:
+        """Crippled Hiruma falls back to normal attack."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        choice, void_spend = fighter.choose_attack("Generic", 3)
+        assert choice == "attack"
+        assert void_spend == 0
+
+
+class TestAttackVoidStrategyCrippled:
+    """attack_void_strategy returns 0 when crippled."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """Crippled Hiruma does not spend void on attack."""
+        fighter = _make_fighter(knack_rank=3, void_points=5)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(5, 2, 15)
+        assert result == 0
+
+    def test_not_crippled_uses_parry_bonus(self) -> None:
+        """Non-crippled Hiruma factors in parry attack bonus."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, fire=3, void=3)
+        fighter._parry_attack_bonus = 10
+        result = fighter.attack_void_strategy(6, 3, 30)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
 class TestFactoryRegistration:
     """Hiruma Scout creates via fighter factory."""
 

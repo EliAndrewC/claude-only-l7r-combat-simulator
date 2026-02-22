@@ -474,6 +474,102 @@ class TestParryTnReductionExtraDice:
         assert "10k6" in pool
 
 
+class TestResolveShibaParryDamageZeroRolled:
+    """_resolve_shiba_parry_damage returns early when dmg_rolled <= 0 (line 47)."""
+
+    def test_zero_attack_rank_no_damage(self) -> None:
+        """When attack rank is 0, dmg_rolled is 0 and function returns."""
+        from src.engine.fighters.shiba import _resolve_shiba_parry_damage
+
+        char = _make_shiba(knack_rank=3, attack_rank=0)
+        opp = _make_generic()
+        state = _make_state(char, opp)
+        wound_tracker = state.log.wounds["Generic"]
+        lw_before = wound_tracker.light_wounds
+        _resolve_shiba_parry_damage(state, char.name, "Generic", 3)
+        # No damage should be applied
+        assert wound_tracker.light_wounds == lw_before
+
+
+class TestResolveShibaParryDamageVoidStrategyZero:
+    """_resolve_shiba_parry_damage when target's wc_void_strategy == 0 (line 88)."""
+
+    def test_merchant_target_void_strategy_zero(self) -> None:
+        """Merchant returns 0 from wound_check_void_strategy, hitting line 88."""
+        from src.engine.fighters.shiba import _resolve_shiba_parry_damage
+
+        shiba_char = _make_shiba(knack_rank=3, attack_rank=3)
+        merchant_char = Character(
+            name="Merchant",
+            rings=Rings(
+                air=Ring(name=RingName.AIR, value=2),
+                fire=Ring(name=RingName.FIRE, value=2),
+                earth=Ring(name=RingName.EARTH, value=2),
+                water=Ring(name=RingName.WATER, value=2),
+                void=Ring(name=RingName.VOID, value=2),
+            ),
+            school="Merchant",
+            school_ring=RingName.WATER,
+            school_knacks=["Sincerity", "Worldliness", "Commerce"],
+            skills=[
+                Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+                Skill(name="Sincerity", rank=3, skill_type=SkillType.BASIC, ring=RingName.AIR),
+                Skill(name="Worldliness", rank=0, skill_type=SkillType.BASIC, ring=RingName.WATER),
+            ],
+        )
+        state = _make_state(shiba_char, merchant_char)
+        _resolve_shiba_parry_damage(state, shiba_char.name, "Merchant", 3)
+        # Just needs to execute without error to hit line 88
+
+
+class TestResolveShibaParryDamageWCFlatBonus:
+    """_resolve_shiba_parry_damage when target has wc_flat_bonus (lines 105-107)."""
+
+    def test_akodo_target_wc_flat_bonus(self) -> None:
+        """Akodo at 2nd Dan has wound_check_flat_bonus, hitting lines 105-107."""
+        from src.engine.fighters.shiba import _resolve_shiba_parry_damage
+
+        shiba_char = _make_shiba(knack_rank=3, attack_rank=3)
+        akodo_char = Character(
+            name="Akodo",
+            rings=Rings(
+                air=Ring(name=RingName.AIR, value=2),
+                fire=Ring(name=RingName.FIRE, value=2),
+                earth=Ring(name=RingName.EARTH, value=2),
+                water=Ring(name=RingName.WATER, value=2),
+                void=Ring(name=RingName.VOID, value=2),
+            ),
+            school="Akodo Bushi",
+            school_ring=RingName.WATER,
+            school_knacks=["Feint", "Double Attack", "Lunge"],
+            skills=[
+                Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+                Skill(name="Feint", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+                Skill(
+                    name="Double Attack", rank=2,
+                    skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+                ),
+                Skill(name="Lunge", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            ],
+        )
+        state = _make_state(shiba_char, akodo_char)
+        _resolve_shiba_parry_damage(state, shiba_char.name, "Akodo", 3)
+
+
+class TestConsumeInterruptParryDiceEmpty:
+    """consume_interrupt_parry_dice returns ([], 0) when empty (line 238)."""
+
+    def test_empty_actions_returns_empty(self) -> None:
+        """When actions_remaining is empty, returns ([], 0)."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = []
+        dice, cost = fighter.consume_interrupt_parry_dice()
+        assert dice == []
+        assert cost == 0
+
+
 class TestFactoryCreatesShiba:
     """create_fighter returns ShibaFighter for Shiba Bushi."""
 

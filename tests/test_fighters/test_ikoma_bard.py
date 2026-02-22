@@ -550,6 +550,101 @@ class TestOnRoundStart:
         assert fighter._stored_parry_total == 0
 
 
+class TestAttackVoidStrategyCrippled:
+    """attack_void_strategy returns 0 when crippled (lines 84-88)."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """Crippled Ikoma Bard does not spend void on attack."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(5, 2, 15)
+        assert result == 0
+
+    def test_not_crippled_with_2nd_dan_bonus(self) -> None:
+        """Non-crippled 2nd Dan uses known_bonus=5."""
+        fighter = _make_fighter(knack_rank=2, void_points=5, fire=3, void=3)
+        result = fighter.attack_void_strategy(6, 3, 30)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+class TestDefensiveSAOpponentNone:
+    """try_defensive_sa when opponent not found (line 146)."""
+
+    def test_opponent_none_returns_empty(self) -> None:
+        """When opponent is not in fighters, returns ''."""
+        fighter = _make_fighter(knack_rank=5, earth=2, water=2)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.serious_wounds = 3
+        wound_tracker.light_wounds = 30
+        # Use an attacker_name not in fighters
+        result = fighter.try_defensive_sa(40, 25, 4, 3, "Nonexistent")
+        assert result == ""
+
+
+class TestDefensiveSANotNearMortal:
+    """try_defensive_sa: survivable projected damage (line 168)."""
+
+    def test_projected_damage_not_near_mortal(self) -> None:
+        """When wc_deficit > 0 but existing_sw + projected_sw < 2*earth.
+
+        High earth=5 -> mortal threshold = 10.
+        Low water=1 -> expected WC is low.
+        Moderate existing LW -> projected_lw > expected_wc -> wc_deficit > 0.
+        But existing_sw(0) + projected_sw(small) < 2*5 = 10 -> not mortal.
+        """
+        fighter = _make_fighter(knack_rank=5, earth=5, water=1, air=1, bragging_rank=1)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.serious_wounds = 0
+        wound_tracker.light_wounds = 40
+        # attack_total=30, tn=25 -> extra_dice=(30-25)//5=1
+        # damage_rolled = weapon_rolled(4) + attacker_fire(2) + extra_dice(1) = 7
+        # weapon_kept = 2 (katana), expected_damage ~ estimate_roll(7, 2) ~ 17
+        # projected_lw = 40 + 17 = 57
+        # water=1, water_rolled=2 (5th dan), expected_wc ~ 8
+        # pool_bonus (bragging=1, knack=5): 2 raises, usable=1, total=5
+        # expected_wc = 8 + 5 = 13
+        # wc_deficit = 57 - 13 = 44 > 0
+        # projected_sw = 1 + 44//10 = 5
+        # existing_sw(0) + 5 = 5 < 2*5=10 -> NOT near mortal -> line 168
+        result = fighter.try_defensive_sa(30, 25, 4, 2, "Generic")
+        assert result == ""
+
+
+class TestPostWoundCheckDeficitLeZero:
+    """post_wound_check: deficit <= 0 returns early (line 240)."""
+
+    def test_deficit_le_zero_returns_early(self) -> None:
+        """When wc_total >= light_wounds, no raises spent."""
+        fighter = _make_fighter(knack_rank=3, bragging_rank=5, earth=3)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 20
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=25, attacker_name="Generic",
+        )
+        assert not new_passed
+        assert new_total == 25
+        assert note == ""
+        assert fighter._free_raises == 10
+
+
+class TestPostWoundCheckBestSpendZero:
+    """post_wound_check: best_spend <= 0 returns early (line 264)."""
+
+    def test_best_spend_zero_returns_early(self) -> None:
+        """When spending raises cannot reduce SW, returns early."""
+        fighter = _make_fighter(knack_rank=3, bragging_rank=1, earth=5)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 50
+        wound_tracker.serious_wounds = 1
+        new_passed, new_total, note = fighter.post_wound_check(
+            passed=False, wc_total=46, attacker_name="Generic",
+            sw_before_wc=0,
+        )
+        assert note == ""
+        assert fighter._free_raises == 2
+
+
 class TestFactoryRegistration:
     """Ikoma Bard creates via fighter factory."""
 

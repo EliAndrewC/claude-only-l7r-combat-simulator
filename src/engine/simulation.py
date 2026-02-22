@@ -340,11 +340,25 @@ def _resolve_attack(
     if is_double_attack:
         tn += 20
 
+    # --- Ikoma Bard SA: force opponent to parry (no free raise) ---
+    forced_parry = False
+    force_parry_note = ""
+    force_result, fp_note = attacker_fighter.sa_force_parry(defender_name, phase)
+    if force_result:
+        forced_parry = True
+        force_parry_note = fp_note
+        # Consume opponent's lowest available action die
+        if defender_fighter.actions_remaining:
+            forced_die = defender_fighter.actions_remaining[0]  # sorted, lowest first
+            defender_fighter.actions_remaining.remove(forced_die)
+
     # --- Parry pre-declaration (feature 4) ---
     has_action_in_phase = defender_fighter.has_action_in_phase(phase)
 
     predeclared = False
-    if has_action_in_phase and def_parry_rank > 0:
+    if forced_parry:
+        predeclared = True  # But no free raise — handled below
+    elif has_action_in_phase and def_parry_rank > 0:
         predeclared = defender_fighter.should_predeclare_parry(tn, phase)
 
     # If pre-declared, consume the parry die now (before attack roll)
@@ -683,8 +697,26 @@ def _resolve_attack(
         attack_action.success = attack_action.total >= tn
         attack_action.description += f" (hida SA: attacker +{ca_sa_penalty})"
 
+    # Add forced parry note to attack description
+    if force_parry_note:
+        attack_action.description += force_parry_note
+
     attack_action.status_after = state.snapshot_status()
     log.add_action(attack_action)
+
+    # --- 5th Dan defensive SA (Ikoma Bard): cancel attack, store parry ---
+    if attack_action.success:
+        cancel_note = defender_fighter.try_defensive_sa(
+            attack_action.total, tn,
+            weapon.rolled, attacker.rings.fire.value,
+            attacker_name,
+        )
+        if cancel_note:
+            attack_action.description += cancel_note
+            # Store attack total as forced parry on the attacker
+            attacker_fighter._stored_parry_total = attack_action.total
+            attack_action.status_after = state.snapshot_status()
+            return
 
     # Attack missed — dice already consumed by pre-declaration (if any),
     # reflected in attack_action.status_after snapshot.
@@ -743,7 +775,30 @@ def _resolve_attack(
     # Ability 2: Parry TN increase — via Fighter hook
     ab2_bonus = attacker_fighter.attacker_parry_tn_bonus()
 
-    # Determine if defender can and should parry
+    # Check for stored parry (5th Dan defensive SA — attack roll used as parry)
+    stored_parry = defender_fighter._stored_parry_total
+    if stored_parry > 0:
+        defender_fighter._stored_parry_total = 0
+        parry_attempted = True
+        parry_tn = attack_action.total + ab2_bonus
+        parry_succeeded = stored_parry >= parry_tn
+        parry_action = CombatAction(
+            phase=phase, actor=defender_name,
+            action_type=ActionType.PARRY, target=attacker_name,
+            dice_rolled=[], dice_kept=[], total=stored_parry,
+            tn=parry_tn, success=parry_succeeded,
+            description=(
+                f"{defender_name} parries (stored attack roll):"
+                f" {stored_parry} vs TN {parry_tn}"
+            ),
+        )
+        log.add_action(parry_action)
+        parry_action.status_after = state.snapshot_status()
+        if parry_succeeded:
+            return
+        # Fall through to damage with parry_attempted=True
+
+    # Determine if defender can and should parry (skip if stored parry used)
     can_parry = False
     is_phase_shift = False
     phase_shift_die = 0
@@ -751,7 +806,9 @@ def _resolve_attack(
     is_interrupt = False
     attacker_weapon: Weapon = attacker_fighter.weapon
 
-    if predeclared:
+    if stored_parry > 0:
+        pass  # Already handled above — skip normal parry logic
+    elif predeclared:
         # Pre-declared: die already consumed, always parry
         can_parry = True
     elif has_action_in_phase and def_parry_rank > 0:
@@ -768,7 +825,7 @@ def _resolve_attack(
             phase_shift_die = shift_die
             phase_shift_cost = shift_cost
     interrupt_cost = defender_fighter.min_interrupt_dice()
-    if not can_parry and defender_fighter.can_interrupt() and (
+    if not can_parry and stored_parry <= 0 and defender_fighter.can_interrupt() and (
         not has_action_in_phase
         and len(defender_fighter.actions_remaining) >= interrupt_cost
         and def_parry_rank > 0
@@ -853,9 +910,11 @@ def _resolve_attack(
 
         # Feature 4: Pre-declared parry gets +5 bonus (added to total)
         # Interrupts are reactive and never get the pre-declare bonus
+        # Forced parry (Ikoma Bard SA) does NOT get the free raise bonus
         parry_tn = attack_action.total + ab2_bonus
-        parry_bonus = 5 if (predeclared and not is_interrupt) else 0
-        parry_bonus_note = " (pre-declared, +5 bonus)" if (predeclared and not is_interrupt) else ""
+        has_predeclare_bonus = predeclared and not is_interrupt and not forced_parry
+        parry_bonus = 5 if has_predeclare_bonus else 0
+        parry_bonus_note = " (pre-declared, +5 bonus)" if has_predeclare_bonus else ""
 
         # School technique parry bonus (e.g. 2nd Dan free raise)
         school_parry_bonus = defender_fighter.parry_bonus()
@@ -1163,6 +1222,17 @@ def _resolve_attack(
 
     extra_dmg = extra_dice + da_extra_rolled + sa_dmg_rolled
     dmg_extra_kept = sa_dmg_kept
+
+    # 4th Dan minimum rolled (Ikoma Bard: 10 dice on unparried, no extra kept)
+    base_rolled = boosted_rolled + attacker.rings.fire.value + extra_dmg
+    min_rolled = attacker_fighter.damage_min_rolled(
+        base_rolled, parry_attempted, dmg_extra_kept,
+    )
+    dmg_min_note = ""
+    if min_rolled > base_rolled:
+        dmg_min_note = f" (ikoma bard 4th Dan: min {min_rolled} dice)"
+        extra_dmg += (min_rolled - base_rolled)
+
     damage_action = roll_damage(
         attacker, boosted_rolled, weapon.kept, extra_dmg,
         extra_kept=dmg_extra_kept,
@@ -1172,12 +1242,14 @@ def _resolve_attack(
     # Show overflow conversion in damage dice pool
     dmg_rolled = (
         boosted_rolled + attacker.rings.fire.value
-        + extra_dice + da_extra_rolled + sa_dmg_rolled
+        + extra_dmg
     )
     dmg_kept_total = weapon.kept + dmg_extra_kept
     damage_action.dice_pool = _format_pool_with_overflow(
         dmg_rolled, dmg_kept_total,
     )
+    if dmg_min_note:
+        damage_action.description += dmg_min_note
     if sa_dmg_rolled > 0:
         damage_action.description += (
             f" (SA: +{sa_dmg_rolled}k{sa_dmg_kept} from void on attack)"

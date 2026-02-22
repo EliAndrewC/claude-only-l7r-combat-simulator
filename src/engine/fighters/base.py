@@ -52,6 +52,7 @@ class Fighter:
         self.lunge_target_bonus = lunge_target_bonus
         self.parry_tn_reduction = 0
         self.feint_free_raises = 0
+        self._stored_parry_total = 0
 
     # -- Convenience accessors ------------------------------------------
 
@@ -188,6 +189,24 @@ class Fighter:
     def near_miss_da_description(self) -> str:
         """Description for near-miss DA hit (default: empty)."""
         return ""
+
+    def sa_force_parry(self, defender_name: str, phase: int) -> tuple[bool, str]:
+        """SA: Force opponent to parry (default: no)."""
+        return False, ""
+
+    def try_defensive_sa(
+        self, attack_total: int, tn: int,
+        weapon_rolled: int, attacker_fire: int,
+        attacker_name: str,
+    ) -> str:
+        """Cancel incoming attack with defensive SA (default: no cancel)."""
+        return ""
+
+    def damage_min_rolled(
+        self, current_rolled: int, parry_attempted: bool, extra_kept: int,
+    ) -> int:
+        """Minimum rolled dice for damage (default: no minimum)."""
+        return current_rolled
 
     def sa_attack_bonus(
         self, phase: int, die_value: int | None = None,

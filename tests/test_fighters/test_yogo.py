@@ -368,6 +368,71 @@ class TestWorldlinessVoid:
         assert fighter.worldliness_void == 5
 
 
+class TestAttackVoidStrategy:
+    """attack_void_strategy: crippled returns 0, normal delegates."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """When crippled, attack_void_strategy returns 0."""
+        fighter = _make_fighter(knack_rank=3, da_rank=3, void_points=5, earth=2)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(rolled=5, kept=3, tn=15)
+        assert result == 0
+
+    def test_not_crippled_delegates_to_utility(self) -> None:
+        """When not crippled, delegates to should_spend_void_on_combat_roll."""
+        fighter = _make_fighter(knack_rank=3, da_rank=3, void_points=5, earth=2)
+        result = fighter.attack_void_strategy(rolled=5, kept=3, tn=15)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+class TestWoundCheckVoidStrategy:
+    """wound_check_void_strategy stores void spent for 4th Dan."""
+
+    def test_stores_result_in_wc_void_spent(self) -> None:
+        """wound_check_void_strategy stores result in _wc_void_spent."""
+        fighter = _make_fighter(knack_rank=4, void_points=5, water=3)
+        fighter.state.log.wounds[fighter.name].light_wounds = 40
+        result = fighter.wound_check_void_strategy(
+            water_ring=3, light_wounds=40,
+        )
+        assert isinstance(result, int)
+        assert result >= 0
+        assert fighter._wc_void_spent == result
+
+    def test_low_dan_still_works(self) -> None:
+        """wound_check_void_strategy works at lower dans (no tn_bonus)."""
+        fighter = _make_fighter(knack_rank=1, void_points=3, water=2)
+        fighter.state.log.wounds[fighter.name].light_wounds = 20
+        result = fighter.wound_check_void_strategy(
+            water_ring=2, light_wounds=20,
+        )
+        assert isinstance(result, int)
+        assert fighter._wc_void_spent == result
+
+
+class TestOnVoidSpentEdgeCases:
+    """Edge cases for on_void_spent at 3rd Dan."""
+
+    def test_attack_rank_zero_returns_empty(self) -> None:
+        """3rd Dan with attack rank 0: reduction=0, returns ''."""
+        fighter = _make_fighter(knack_rank=3, attack_rank=0)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 30
+        note = fighter.on_void_spent(1, "attack")
+        assert wound_tracker.light_wounds == 30
+        assert note == ""
+
+    def test_no_lw_actual_zero_returns_empty(self) -> None:
+        """3rd Dan with positive reduction but 0 LW: actual=0, returns ''."""
+        fighter = _make_fighter(knack_rank=3, attack_rank=3)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 0
+        note = fighter.on_void_spent(1, "attack")
+        assert wound_tracker.light_wounds == 0
+        assert note == ""
+
+
 class TestFactoryRegistration:
     """Yogo Warden creates via fighter factory."""
 

@@ -669,6 +669,144 @@ class TestFeintCapping:
         assert choice == "feint"
 
 
+class TestChooseAttackFallback:
+    """Test choose_attack fallback to normal attack."""
+
+    def test_attack_when_no_da_no_feint(self) -> None:
+        """When dan < 1, no DA available, returns attack."""
+        char = _make_bayushi(dan=0, da_rank=0, feint_rank=0)
+        fighter, _ = _make_fighter(char, void_points=2)
+        choice, void = fighter.choose_attack("Opponent", 3)
+        assert choice == "attack"
+
+
+class TestAttackVoidStrategy:
+    """attack_void_strategy: spend 1 void if available, else 0."""
+
+    def test_returns_1_when_void_available(self) -> None:
+        """Returns 1 when total_void > 0."""
+        char = _make_bayushi(dan=1)
+        fighter, _ = _make_fighter(char, void_points=3)
+        result = fighter.attack_void_strategy(rolled=5, kept=3, tn=15)
+        assert result == 1
+
+    def test_returns_0_when_no_void(self) -> None:
+        """Returns 0 when total_void is 0."""
+        char = _make_bayushi(dan=1)
+        fighter, _ = _make_fighter(char, void_points=0)
+        result = fighter.attack_void_strategy(rolled=5, kept=3, tn=15)
+        assert result == 0
+
+
+class TestReactiveParryNoParrySkill:
+    """should_reactive_parry returns False with no parry skill."""
+
+    def test_no_parry_skill_returns_false(self) -> None:
+        """When parry rank is 0, reactive parry is refused."""
+        char = _make_bayushi(dan=3, parry=0)
+        fighter, _ = _make_fighter(char)
+        result = fighter.should_reactive_parry(
+            attack_total=50, attack_tn=15,
+            weapon_rolled=6, attacker_fire=6,
+        )
+        assert result is False
+
+
+class TestInterruptParryEdgeCases:
+    """should_interrupt_parry edge cases."""
+
+    def test_no_parry_skill_returns_false(self) -> None:
+        """When parry rank is 0, interrupt parry is refused."""
+        char = _make_bayushi(dan=3, parry=0)
+        fighter, _ = _make_fighter(char, actions=[3, 5, 7])
+        result = fighter.should_interrupt_parry(
+            attack_total=50, attack_tn=15,
+            weapon_rolled=6, attacker_fire=6,
+        )
+        assert result is False
+
+    def test_fewer_than_2_actions_returns_false(self) -> None:
+        """When fewer than 2 actions remain, interrupt parry is refused."""
+        char = _make_bayushi(dan=3, parry=3)
+        fighter, _ = _make_fighter(char, actions=[3])
+        result = fighter.should_interrupt_parry(
+            attack_total=50, attack_tn=15,
+            weapon_rolled=6, attacker_fire=6,
+        )
+        assert result is False
+
+
+class TestFeintDamageResolutionEdgeCases:
+    """Edge cases in _resolve_bayushi_feint_damage."""
+
+    def test_zero_attack_rank_skips_damage(self) -> None:
+        """When attack rank is 0, dmg_rolled <= 0, feint damage is skipped."""
+        from src.engine.fighters.bayushi import _resolve_bayushi_feint_damage
+
+        char = _make_bayushi(dan=3, attack=0)
+        fighter, state = _make_fighter(char, void_points=0)
+        target_name = "Opponent"
+
+        # Record initial LW
+        initial_lw = state.log.wounds[target_name].light_wounds
+        initial_actions = len(state.log.actions)
+
+        _resolve_bayushi_feint_damage(
+            state, "Bayushi", target_name, phase=3, void_spent_on_feint=0,
+        )
+
+        # No damage should be dealt and no actions should be added
+        assert state.log.wounds[target_name].light_wounds == initial_lw
+        assert len(state.log.actions) == initial_actions
+
+    def test_feint_damage_target_wc_void_skip(self) -> None:
+        """When target's wound_check_void_strategy returns 0, void_spend=0."""
+        from src.engine.fighters.bayushi import _resolve_bayushi_feint_damage
+
+        char = _make_bayushi(dan=3, attack=3)
+        fighter, state = _make_fighter(char, void_points=0)
+        target_name = "Opponent"
+        target_ctx = state.fighters[target_name]
+
+        # Mock the target's wound_check_void_strategy to return 0
+        with patch.object(
+            target_ctx, "wound_check_void_strategy", return_value=0,
+        ):
+            _resolve_bayushi_feint_damage(
+                state, "Bayushi", target_name, phase=3,
+                void_spent_on_feint=0,
+            )
+
+        # Feint should deal damage (actions added)
+        assert len(state.log.actions) > 0
+
+    def test_feint_damage_target_with_wc_flat_bonus(self) -> None:
+        """When target has wound_check_flat_bonus > 0, bonus applied to WC."""
+        from src.engine.fighters.bayushi import _resolve_bayushi_feint_damage
+
+        char = _make_bayushi(dan=3, attack=3)
+        fighter, state = _make_fighter(char, void_points=0)
+        target_name = "Opponent"
+        target_ctx = state.fighters[target_name]
+
+        # Mock the target's wound_check_flat_bonus to return a positive bonus
+        with patch.object(
+            target_ctx, "wound_check_flat_bonus",
+            return_value=(5, " (mock 2nd Dan: free raise +5)"),
+        ):
+            _resolve_bayushi_feint_damage(
+                state, "Bayushi", target_name, phase=3,
+                void_spent_on_feint=0,
+            )
+
+        # Feint should complete with wound check (actions include WC)
+        wc_actions = [
+            a for a in state.log.actions
+            if a.action_type == ActionType.WOUND_CHECK
+        ]
+        assert len(wc_actions) > 0
+
+
 class TestBayushiFighterHooks:
     """Direct unit tests for BayushiFighter hook methods."""
 

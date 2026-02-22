@@ -393,6 +393,142 @@ class TestReflectDamageAfterWC:
         assert reflect_lw == 0
 
 
+class TestAttackVoidStrategy:
+    """attack_void_strategy: crippled returns 0, normal delegates."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """When crippled, attack_void_strategy returns 0."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(rolled=5, kept=3, tn=15)
+        assert result == 0
+
+    def test_not_crippled_delegates_to_utility(self) -> None:
+        """When not crippled, delegates to should_spend_void_on_combat_roll."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        result = fighter.attack_void_strategy(rolled=5, kept=3, tn=15)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+class TestSaAttackBonus:
+    """sa_attack_bonus always returns (0, '')."""
+
+    def test_returns_zero(self) -> None:
+        """sa_attack_bonus returns (0, '') for Akodo."""
+        fighter = _make_fighter(knack_rank=3)
+        bonus, note = fighter.sa_attack_bonus(phase=3)
+        assert bonus == 0
+        assert note == ""
+
+
+class TestPostAttackRollBonusEdgeCases:
+    """Edge cases for post_attack_roll_bonus."""
+
+    def test_already_hitting_pool_below_5(self) -> None:
+        """When already hitting but pool < 5, returns (0, '')."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter._attack_bonus_pool = 4  # < 5, not enough for a raise
+        bonus, note = fighter.post_attack_roll_bonus(30, 25, 3, "Generic")
+        assert bonus == 0
+        assert note == ""
+
+    def test_deficit_spend_zero_or_less(self) -> None:
+        """When deficit > 0 but pool is 0 after dan check, returns (0, '')."""
+        fighter = _make_fighter(knack_rank=3)
+        # Pool is positive so dan check passes, but set pool to 0
+        # to make spend = min(deficit, 0) = 0
+        fighter._attack_bonus_pool = 0
+        bonus, note = fighter.post_attack_roll_bonus(20, 25, 3, "Generic")
+        # Pool is 0 so the first guard (dan < 3 or pool <= 0) catches it
+        assert bonus == 0
+        assert note == ""
+
+
+class TestWoundCheckFlatBonus4thDan:
+    """4th Dan: void spent on WC gives free raises."""
+
+    def test_4th_dan_void_bonus(self) -> None:
+        """4th Dan: +5 per void spent on WC, stacked with 2nd Dan."""
+        fighter = _make_fighter(knack_rank=4)
+        fighter._wc_void_spent = 2
+        bonus, note = fighter.wound_check_flat_bonus()
+        # 5 (2nd Dan) + 10 (4th Dan: 2 void * 5) = 15
+        assert bonus == 15
+        assert "akodo 4th Dan" in note
+        assert "akodo 2nd Dan" in note
+
+    def test_4th_dan_no_extra_without_void(self) -> None:
+        """4th Dan with no void spent only gets 2nd Dan bonus."""
+        fighter = _make_fighter(knack_rank=4)
+        fighter._wc_void_spent = 0
+        bonus, note = fighter.wound_check_flat_bonus()
+        assert bonus == 5
+
+
+class TestWoundCheckVoidStrategy:
+    """wound_check_void_strategy method."""
+
+    def test_returns_int_and_stores_result(self) -> None:
+        """wound_check_void_strategy stores result in _wc_void_spent."""
+        fighter = _make_fighter(knack_rank=4, void_points=5, water=3)
+        # Give enough light wounds to make void spending worthwhile
+        fighter.state.log.wounds[fighter.name].light_wounds = 40
+        result = fighter.wound_check_void_strategy(
+            water_ring=3, light_wounds=40,
+        )
+        assert isinstance(result, int)
+        assert result >= 0
+        assert fighter._wc_void_spent == result
+
+    def test_low_dan_still_works(self) -> None:
+        """wound_check_void_strategy works at lower dans too."""
+        fighter = _make_fighter(knack_rank=2, void_points=3, water=2)
+        fighter.state.log.wounds[fighter.name].light_wounds = 20
+        result = fighter.wound_check_void_strategy(
+            water_ring=2, light_wounds=20,
+        )
+        assert isinstance(result, int)
+        assert fighter._wc_void_spent == result
+
+
+class TestReflectDamageEdgeCases:
+    """Edge cases for reflect_damage_after_wc."""
+
+    def test_damage_under_10_returns_zero(self) -> None:
+        """When damage_taken < 10, max_void = 0, returns (0, 0, '')."""
+        fighter = _make_fighter(knack_rank=5, void_points=5)
+        reflect_lw, self_lw, note = fighter.reflect_damage_after_wc(
+            damage_taken=9, attacker_name="Generic",
+        )
+        assert reflect_lw == 0
+        assert self_lw == 0
+        assert note == ""
+
+    def test_projected_damage_not_significant(self) -> None:
+        """When projected damage not significant, skips spending."""
+        # Need opponent with high water so expected_wc is large
+        # and projected_lw <= expected_wc * 0.5
+        akodo_char = _make_akodo(knack_rank=5, water=3)
+        opp = _make_generic(name="Generic", water=5)
+        state = _make_state(akodo_char, opp, akodo_void=1)
+        fighter = state.fighters[akodo_char.name]
+        assert isinstance(fighter, AkodoFighter)
+        # Opponent: 0 LW, not crippled, water=5
+        # projected_lw = 0 + 1*10 = 10
+        # expected_wc = estimate_roll(6, 5) ~= 28.6, * 0.5 = ~14.3
+        # 10 <= 14.3 → skip
+        opp_wounds = state.log.wounds["Generic"]
+        opp_wounds.light_wounds = 0
+        opp_wounds.serious_wounds = 0
+        reflect_lw, self_lw, note = fighter.reflect_damage_after_wc(
+            damage_taken=10, attacker_name="Generic",
+        )
+        assert reflect_lw == 0
+        assert self_lw == 0
+        assert note == ""
+
+
 class TestFactoryRegistration:
     """Akodo Bushi creates via fighter factory."""
 

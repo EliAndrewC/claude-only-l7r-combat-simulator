@@ -390,6 +390,28 @@ class TestPostWoundCheck5thDan:
         assert fighter._wc_bonus_pool == 15  # 10 + 5
 
 
+class TestAttackVoidStrategy:
+    """attack_void_strategy: crippled returns 0, 3rd Dan uses known bonus."""
+
+    def test_crippled_returns_zero(self) -> None:
+        """When crippled, attack_void_strategy returns 0."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        fighter.state.log.wounds[fighter.name].serious_wounds = 2
+        result = fighter.attack_void_strategy(rolled=5, kept=3, tn=15)
+        assert result == 0
+
+    def test_3rd_dan_uses_known_bonus(self) -> None:
+        """At 3rd Dan, attack_void_strategy accounts for known bonus."""
+        fighter = _make_fighter(
+            knack_rank=3, attack_rank=4, void_points=5,
+        )
+        # The 3rd Dan known_bonus is 3 * attack_rank = 12
+        # This should affect the void spending decision
+        result = fighter.attack_void_strategy(rolled=5, kept=3, tn=15)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
 class TestFactoryRegistration:
     """Isawa Duelist creates via fighter factory."""
 

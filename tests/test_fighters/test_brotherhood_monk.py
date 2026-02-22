@@ -472,6 +472,388 @@ class TestOnRoundStart:
         assert fighter._counterattack_used_this_round is False
 
 
+class TestCounterattackHelperEdgeCases:
+    """Edge cases in _resolve_monk_counterattack helper."""
+
+    def test_counterattack_hit_but_no_damage(self) -> None:
+        """Line 133: counterattack misses (hit_success=False) returns (canceled, 0)."""
+        from unittest.mock import patch
+
+        from src.engine.fighters.brotherhood_monk import _resolve_monk_counterattack
+
+        monk_char = _make_monk(knack_rank=5, attack_rank=1, fire=1)
+        opp = _make_generic(parry_rank=10)  # Very high parry TN
+        state = _make_state(monk_char, opp)
+
+        # Patch roll_and_keep to return a very low attack total so hit fails
+        with patch(
+            "src.engine.fighters.brotherhood_monk.roll_and_keep",
+            return_value=([1], [1], 1),
+        ):
+            canceled, margin = _resolve_monk_counterattack(
+                state, monk_char.name, opp.name, 3, 5,
+                attacker_attack_total=1,  # Low so cancel check may pass
+            )
+        # With very high parry TN, hit_success is False, margin should be 0
+        assert margin == 0
+
+    def test_counterattack_damage_total_zero(self) -> None:
+        """Line 151: dmg_total <= 0 returns (canceled, margin) without applying damage."""
+        from unittest.mock import patch
+
+        from src.engine.fighters.brotherhood_monk import _resolve_monk_counterattack
+
+        monk_char = _make_monk(knack_rank=5, attack_rank=3, fire=2, parry_rank=0)
+        opp = _make_generic(parry_rank=0)
+        state = _make_state(monk_char, opp)
+
+        call_count = [0]
+
+        def mock_roll_and_keep(rolled: int, kept: int, explode: bool = True) -> tuple:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # Attack roll: high enough to hit (TN = 5 + 5*0 = 5)
+                return [10, 8, 7, 6, 5], [10, 8], 18
+            # Damage roll: return 0 total
+            return [0], [0], 0
+
+        with patch(
+            "src.engine.fighters.brotherhood_monk.roll_and_keep",
+            side_effect=mock_roll_and_keep,
+        ):
+            canceled, margin = _resolve_monk_counterattack(
+                state, monk_char.name, opp.name, 3, 5,
+                attacker_attack_total=10,
+            )
+        # Should return without applying wounds
+        assert isinstance(canceled, bool)
+        assert margin > 0  # Attack hit, so margin = total - TN
+
+    def test_counterattack_wc_flat_bonus_path(self) -> None:
+        """Lines 193-195: WC flat bonus path in counterattack helper.
+
+        When the target has a wound_check_flat_bonus (like Otaku 2nd Dan),
+        the WC total gets the bonus and passed is recalculated.
+        """
+        from unittest.mock import patch
+
+        from src.engine.fighters.brotherhood_monk import _resolve_monk_counterattack
+
+        # Create monk and an Otaku opponent (who has wound_check_flat_bonus)
+        monk_char = _make_monk(knack_rank=5, attack_rank=3, fire=2)
+        otaku_char = Character(
+            name="Otaku",
+            rings=Rings(
+                air=Ring(name=RingName.AIR, value=2),
+                fire=Ring(name=RingName.FIRE, value=2),
+                earth=Ring(name=RingName.EARTH, value=3),
+                water=Ring(name=RingName.WATER, value=2),
+                void=Ring(name=RingName.VOID, value=2),
+            ),
+            school="Otaku Bushi",
+            school_ring=RingName.FIRE,
+            school_knacks=["Double Attack", "Iaijutsu", "Lunge"],
+            skills=[
+                Skill(
+                    name="Attack", rank=3,
+                    skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Parry", rank=0,
+                    skill_type=SkillType.ADVANCED, ring=RingName.AIR,
+                ),
+                Skill(
+                    name="Double Attack", rank=2,
+                    skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Iaijutsu", rank=2,
+                    skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Lunge", rank=2,
+                    skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+                ),
+            ],
+        )
+        state = _make_state(monk_char, otaku_char)
+
+        call_count = [0]
+
+        def mock_roll_and_keep(rolled: int, kept: int, explode: bool = True) -> tuple:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return [10, 8, 7], [10, 8], 18  # Attack hits (TN=5)
+            if call_count[0] == 2:
+                return [5, 3], [5, 3], 8  # Damage
+            # Wound check: roll low enough that without flat bonus it fails
+            return [3, 2, 1], [3, 2], 5
+
+        with patch(
+            "src.engine.fighters.brotherhood_monk.roll_and_keep",
+            side_effect=mock_roll_and_keep,
+        ), patch(
+            "src.engine.fighters.brotherhood_monk.make_wound_check",
+            return_value=(False, 5, [3, 2, 1], [3, 2]),
+        ):
+            _resolve_monk_counterattack(
+                state, monk_char.name, otaku_char.name, 3, 5,
+                attacker_attack_total=10,
+            )
+        # The Otaku has wound_check_flat_bonus if dan >= 2; we confirm it ran
+
+    def test_counterattack_convert_light_to_serious(self) -> None:
+        """Lines 211-213: convert light wounds to 1 serious wound in counterattack."""
+        from unittest.mock import patch
+
+        from src.engine.fighters.brotherhood_monk import _resolve_monk_counterattack
+
+        monk_char = _make_monk(knack_rank=5, attack_rank=3, fire=2)
+        # Opponent with high earth so conversion is attractive
+        opp = _make_generic(earth=3, water=3)
+        state = _make_state(monk_char, opp)
+
+        call_count = [0]
+
+        def mock_roll_and_keep(rolled: int, kept: int, explode: bool = True) -> tuple:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return [10, 8], [10, 8], 18  # Attack hits (TN=15)
+            if call_count[0] == 2:
+                return [10, 5], [10, 5], 15  # Damage = 15
+            # Wound check: pass with enough margin
+            return [20, 15, 10], [20, 15], 35
+
+        wound_tracker = state.log.wounds[opp.name]
+        wound_tracker.light_wounds = 0  # Will have 15 after damage
+
+        with patch(
+            "src.engine.fighters.brotherhood_monk.roll_and_keep",
+            side_effect=mock_roll_and_keep,
+        ), patch(
+            "src.engine.fighters.brotherhood_monk.make_wound_check",
+            return_value=(True, 35, [20, 15, 10], [20, 15]),
+        ), patch(
+            "src.engine.fighters.brotherhood_monk.should_convert_light_to_serious",
+            return_value=True,
+        ):
+            _resolve_monk_counterattack(
+                state, monk_char.name, opp.name, 3, 5,
+                attacker_attack_total=10,
+            )
+        # Confirm conversion happened
+        assert wound_tracker.serious_wounds >= 1
+
+    def test_counterattack_wc_failed_resets_lw(self) -> None:
+        """Line 238: WC not passed resets light_wounds to 0."""
+        from unittest.mock import patch
+
+        from src.engine.fighters.brotherhood_monk import _resolve_monk_counterattack
+
+        monk_char = _make_monk(knack_rank=5, attack_rank=3, fire=2)
+        opp = _make_generic(earth=2, water=2)
+        state = _make_state(monk_char, opp)
+
+        call_count = [0]
+
+        def mock_roll_and_keep(rolled: int, kept: int, explode: bool = True) -> tuple:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return [10, 8], [10, 8], 18  # Attack hits
+            if call_count[0] == 2:
+                return [10, 5], [10, 5], 15  # Damage
+            return [3, 2, 1], [3, 2], 5  # Wound check: fails
+
+        with patch(
+            "src.engine.fighters.brotherhood_monk.roll_and_keep",
+            side_effect=mock_roll_and_keep,
+        ), patch(
+            "src.engine.fighters.brotherhood_monk.make_wound_check",
+            return_value=(False, 5, [3, 2, 1], [3, 2]),
+        ):
+            _resolve_monk_counterattack(
+                state, monk_char.name, opp.name, 3, 5,
+                attacker_attack_total=10,
+            )
+        wound_tracker = state.log.wounds[opp.name]
+        assert wound_tracker.light_wounds == 0
+
+
+class TestAttackVoidStrategyCrippled:
+    """attack_void_strategy when crippled and not crippled."""
+
+    def test_returns_zero_when_crippled(self) -> None:
+        """Lines 293-295: When crippled, attack_void_strategy returns 0."""
+        fighter = _make_fighter(knack_rank=3, earth=2, void=3)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.serious_wounds = 2  # is_crippled = sw >= earth
+        result = fighter.attack_void_strategy(5, 2, 20)
+        assert result == 0
+
+    def test_not_crippled_delegates_to_heuristic(self) -> None:
+        """Lines 296-297: When not crippled, delegates to should_spend_void_on_combat_roll."""
+        fighter = _make_fighter(knack_rank=3, earth=3, void=3)
+        # Not crippled (sw=0 < earth=3)
+        result = fighter.attack_void_strategy(5, 2, 20)
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+class TestPostWoundCheckEdgeCases:
+    """Edge cases in post_wound_check."""
+
+    def test_deficit_lte_zero(self) -> None:
+        """Line 386: deficit <= 0 returns early without spending."""
+        fighter = _make_fighter(knack_rank=3, precepts_rank=5, earth=3)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 20
+        wound_tracker.serious_wounds = 1
+        # wc_total >= light_wounds means deficit <= 0
+        passed, total, note = fighter.post_wound_check(
+            passed=False, wc_total=20, attacker_name="Generic",
+            sw_before_wc=0,
+        )
+        assert note == ""
+        assert fighter._free_raises == 10
+
+    def test_best_spend_zero_or_sw_not_reduced(self) -> None:
+        """Line 410: best_spend <= 0 or best_sw >= current_sw returns early.
+
+        This happens when free raises cannot reduce SW count (deficit too
+        large and spending doesn't cross a 10-point threshold).
+        """
+        fighter = _make_fighter(knack_rank=3, precepts_rank=1, earth=5)
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.light_wounds = 50
+        wound_tracker.serious_wounds = 3
+        # deficit = 50 - 20 = 30. current_sw = 1 + 30//10 = 4.
+        # max_per_roll = 1, usable = min(1, 2) = 1.
+        # spend=1: new_deficit=25, new_sw = 1+25//10 = 3. 3 < 4, so it will reduce.
+        # But let's make it so spending doesn't help:
+        # deficit = 50 - 46 = 4, current_sw = 1. spend=1: new_deficit=-1 -> pass.
+        # Not mortal, so won't pass. best_spend stays 0.
+        wound_tracker.light_wounds = 50
+        wound_tracker.serious_wounds = 1
+        sw_before = 0
+        passed, total, note = fighter.post_wound_check(
+            passed=False, wc_total=46, attacker_name="Generic",
+            sw_before_wc=sw_before,
+        )
+        # deficit=4, current_sw=1. spend=1 -> new_deficit=-1 -> passes.
+        # would_die: sw_before(0)+current_sw(1) >= 2*5=10 -> False.
+        # So won't spend to pass. best_spend=0.
+        assert note == ""
+
+
+class TestConsumeCheapestDieNoActions:
+    """_consume_cheapest_die when no actions remaining."""
+
+    def test_returns_none(self) -> None:
+        """Line 446: returns None when actions_remaining is empty."""
+        fighter = _make_fighter(knack_rank=5)
+        fighter.actions_remaining = []
+        result = fighter._consume_cheapest_die()
+        assert result is None
+
+
+class TestTryCancelBeforeDamageEdgeCases:
+    """Edge cases in try_cancel_before_damage."""
+
+    def test_in_counterattack_guard(self) -> None:
+        """Line 464: _in_counterattack prevents recursive counterattack."""
+        fighter = _make_fighter(knack_rank=5, earth=2, water=2)
+        fighter.actions_remaining = [3, 5]
+        fighter._in_counterattack = True
+        result, note = fighter.try_cancel_before_damage(40, 25, "Generic", 3)
+        assert result is False
+        assert note == ""
+
+    def test_attacker_mortally_wounded(self) -> None:
+        """Line 472: attacker is mortally wounded, no counterattack."""
+        fighter = _make_fighter(knack_rank=5, earth=2, water=2)
+        fighter.actions_remaining = [3, 5]
+        attacker_wounds = fighter.state.log.wounds["Generic"]
+        attacker_wounds.serious_wounds = 4  # 2*earth=4 -> mortally wounded
+        result, note = fighter.try_cancel_before_damage(40, 25, "Generic", 3)
+        assert result is False
+        assert note == ""
+
+    def test_attacker_not_in_fighters(self) -> None:
+        """Line 477: attacker_f is None (attacker not found in fighters dict)."""
+        fighter = _make_fighter(knack_rank=5, earth=2, water=2)
+        fighter.actions_remaining = [3, 5]
+        # Add a wound tracker for "Unknown" so it doesn't error there
+        from src.models.combat import WoundTracker
+        fighter.state.log.wounds["Unknown"] = WoundTracker(earth_ring=2)
+        result, note = fighter.try_cancel_before_damage(40, 25, "Unknown", 3)
+        assert result is False
+        assert note == ""
+
+    def test_survivable_projected_damage(self) -> None:
+        """Line 505: projected_sw < 2*earth means survivable, skip.
+
+        Set up so wc_deficit > 0 (damage exceeds WC) but
+        existing_sw + projected_sw < 2*earth (still survivable).
+        """
+        # Low water so WC expected is low, but high earth so survivable
+        fighter = _make_fighter(
+            knack_rank=5, earth=5, water=1, fire=1, precepts_rank=0,
+        )
+        fighter.actions_remaining = [3, 5]
+        # No existing SW, so existing_sw=0
+        # Generic has fire=2, katana 4k2
+        # attack_total=30, tn=25 -> extra_dice=1
+        # damage_rolled = 4+2+1=7, kept=2 -> est ~14
+        # projected_lw = 0+14 = 14
+        # water=1, rolled=1+1=2, kept=1 -> est ~7, pool=0
+        # wc_deficit = 14-7 = 7 > 0
+        # projected_sw = 1+7//10 = 1
+        # existing_sw(0) + projected_sw(1) = 1 < 2*5=10 -> survivable
+        result, note = fighter.try_cancel_before_damage(30, 25, "Generic", 3)
+        assert result is False
+        assert note == ""
+
+    def test_consumed_die_is_none(self) -> None:
+        """Line 510: consumed is None after heuristic passes.
+
+        This can't naturally happen because we check actions_remaining
+        before calling _consume_cheapest_die, but we test the guard.
+        """
+        from unittest.mock import patch
+
+        fighter = _make_fighter(knack_rank=5, earth=2, water=2, fire=2)
+        fighter.actions_remaining = [3, 5]
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.serious_wounds = 3
+        wound_tracker.light_wounds = 30
+
+        with patch.object(fighter, "_consume_cheapest_die", return_value=None):
+            result, note = fighter.try_cancel_before_damage(40, 25, "Generic", 3)
+        assert result is False
+        assert note == ""
+
+    def test_counterattack_fires_but_does_not_cancel(self) -> None:
+        """Lines 529-533: counterattack fires but roll does not cancel."""
+        from unittest.mock import patch
+
+        fighter = _make_fighter(knack_rank=5, earth=2, water=2, fire=2)
+        fighter.actions_remaining = [3, 5, 7]
+        wound_tracker = fighter.state.log.wounds[fighter.name]
+        wound_tracker.serious_wounds = 3
+        wound_tracker.light_wounds = 30
+
+        # Mock the counterattack to NOT cancel (return False)
+        with patch(
+            "src.engine.fighters.brotherhood_monk._resolve_monk_counterattack",
+            return_value=(False, 5),
+        ):
+            result, note = fighter.try_cancel_before_damage(40, 25, "Generic", 3)
+        assert result is False
+        assert "does not cancel" in note
+        assert "monk 5th Dan" in note
+        assert fighter._counterattack_used_this_round is True
+
+
 class TestFactoryRegistration:
     """Brotherhood Monk creates via fighter factory."""
 

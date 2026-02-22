@@ -658,6 +658,206 @@ class TestDeclarationNotCountedAsAttack:
         assert stats["hits"] == 1
 
 
+class TestCounterattackMiss:
+    """_resolve_hida_counterattack when counterattack misses (line 130)."""
+
+    def test_counterattack_miss_returns_zero(self) -> None:
+        """Line 130: counterattack miss returns 0."""
+        from unittest.mock import patch
+
+        from src.engine.fighters.hida import _resolve_hida_counterattack
+
+        hida_char = _make_hida(knack_rank=1, counterattack_rank=1, fire=1)
+        opp = _make_generic(parry_rank=10)  # Very high parry TN
+        state = _make_state(hida_char, opp)
+
+        with patch(
+            "src.engine.fighters.hida.roll_and_keep",
+            return_value=([1], [1], 1),
+        ):
+            margin = _resolve_hida_counterattack(
+                state, hida_char.name, opp.name, 3, 5,
+            )
+        assert margin == 0
+
+
+class TestAttackRerollZeroCA:
+    """3rd Dan reroll with counterattack_rank = 0 (lines 285-286)."""
+
+    def test_3rd_dan_no_counterattack_skill(self) -> None:
+        """Lines 285-286: 3rd Dan with no Counterattack skill does no reroll.
+
+        Create a Hida whose school_knacks exclude Counterattack so dan can
+        be >= 3 while Counterattack skill is absent.
+        """
+        hida_char = Character(
+            name="Hida",
+            rings=Rings(
+                air=Ring(name=RingName.AIR, value=2),
+                fire=Ring(name=RingName.FIRE, value=3),
+                earth=Ring(name=RingName.EARTH, value=2),
+                water=Ring(name=RingName.WATER, value=2),
+                void=Ring(name=RingName.VOID, value=2),
+            ),
+            school="Hida Bushi",
+            school_ring=RingName.WATER,
+            school_knacks=["Iaijutsu", "Lunge"],
+            skills=[
+                Skill(
+                    name="Attack", rank=3,
+                    skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Parry", rank=2,
+                    skill_type=SkillType.ADVANCED, ring=RingName.AIR,
+                ),
+                Skill(
+                    name="Iaijutsu", rank=3,
+                    skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Lunge", rank=3,
+                    skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+                ),
+            ],
+        )
+        opp = _make_generic()
+        state = _make_state(hida_char, opp)
+        fighter = state.fighters["Hida"]
+        assert isinstance(fighter, HidaFighter)
+        assert fighter.dan >= 3  # dan = min(3, 3) = 3
+
+        all_dice = [6, 5, 4, 3, 2, 1]
+        kept_count = 3
+        new_all, new_kept, new_total, note = fighter.post_attack_reroll(
+            all_dice, kept_count,
+        )
+        assert note == ""
+        assert new_all == all_dice
+        assert new_kept == [6, 5, 4]
+        assert new_total == 15
+
+
+class TestConsumeCheapestDieEmpty:
+    """_consume_cheapest_die when actions_remaining is empty (line 359)."""
+
+    def test_returns_none(self) -> None:
+        """Line 359: returns None when no actions remaining."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = []
+        result = fighter._consume_cheapest_die()
+        assert result is None
+
+
+class TestPreAttackCounterattackEdgeCases:
+    """Edge cases in resolve_pre_attack_counterattack."""
+
+    def test_attacker_in_counter_lunge(self) -> None:
+        """Line 379: attacker has _in_counter_lunge=True, no counterattack."""
+        fighter = _make_fighter(knack_rank=3, fire=3, counterattack_rank=3)
+        fighter.actions_remaining = [3, 5, 7]
+        attacker_f = fighter.state.fighters["Generic"]
+        attacker_f._in_counter_lunge = True
+        result = fighter.resolve_pre_attack_counterattack("Generic", 5)
+        assert result is None
+
+    def test_attacker_in_counterattack(self) -> None:
+        """Line 381: attacker has _in_counterattack=True, no counterattack."""
+        fighter = _make_fighter(knack_rank=3, fire=3, counterattack_rank=3)
+        fighter.actions_remaining = [3, 5, 7]
+        attacker_f = fighter.state.fighters["Generic"]
+        attacker_f._in_counterattack = True
+        result = fighter.resolve_pre_attack_counterattack("Generic", 5)
+        assert result is None
+
+    def test_attacker_mortally_wounded(self) -> None:
+        """Line 391: attacker is mortally wounded, no counterattack."""
+        fighter = _make_fighter(knack_rank=3, fire=3, counterattack_rank=3)
+        fighter.actions_remaining = [3, 5, 7]
+        fighter.state.log.wounds["Generic"].serious_wounds = 4  # 2*earth=4
+        result = fighter.resolve_pre_attack_counterattack("Generic", 5)
+        assert result is None
+
+    def test_consumed_die_none_guard(self) -> None:
+        """Line 395: consumed is None guard after actions_remaining check."""
+        from unittest.mock import patch
+
+        fighter = _make_fighter(knack_rank=3, fire=3, counterattack_rank=3)
+        fighter.actions_remaining = [3, 5, 7]
+        with patch.object(fighter, "_consume_cheapest_die", return_value=None):
+            result = fighter.resolve_pre_attack_counterattack("Generic", 5)
+        assert result is None
+
+
+class TestPostDamageCounterattackEdgeCases:
+    """Edge cases in resolve_post_damage_counterattack."""
+
+    def test_in_counterattack_guard(self) -> None:
+        """Line 423: _in_counterattack prevents recursion."""
+        fighter = _make_fighter(knack_rank=5, fire=4, counterattack_rank=5)
+        fighter.actions_remaining = [3, 5, 7]
+        fighter._in_counterattack = True
+        result = fighter.resolve_post_damage_counterattack("Generic", 5, 20)
+        assert result == 0
+
+    def test_attacker_in_counter_lunge(self) -> None:
+        """Line 428: attacker has _in_counter_lunge=True, no post-damage counter."""
+        fighter = _make_fighter(knack_rank=5, fire=4, counterattack_rank=5)
+        fighter.actions_remaining = [3, 5, 7]
+        attacker_f = fighter.state.fighters["Generic"]
+        attacker_f._in_counter_lunge = True
+        result = fighter.resolve_post_damage_counterattack("Generic", 5, 20)
+        assert result == 0
+
+    def test_attacker_in_counterattack(self) -> None:
+        """Line 430: attacker has _in_counterattack=True, no post-damage counter."""
+        fighter = _make_fighter(knack_rank=5, fire=4, counterattack_rank=5)
+        fighter.actions_remaining = [3, 5, 7]
+        attacker_f = fighter.state.fighters["Generic"]
+        attacker_f._in_counterattack = True
+        result = fighter.resolve_post_damage_counterattack("Generic", 5, 20)
+        assert result == 0
+
+    def test_hida_mortally_wounded(self) -> None:
+        """Line 438: Hida is mortally wounded, no post-damage counter."""
+        fighter = _make_fighter(knack_rank=5, fire=4, earth=2)
+        fighter.actions_remaining = [3, 5, 7]
+        fighter.state.log.wounds[fighter.name].serious_wounds = 4
+        result = fighter.resolve_post_damage_counterattack("Generic", 5, 20)
+        assert result == 0
+
+    def test_attacker_mortally_wounded(self) -> None:
+        """Line 440: attacker is mortally wounded, no post-damage counter."""
+        fighter = _make_fighter(knack_rank=5, fire=4, earth=2)
+        fighter.actions_remaining = [3, 5, 7]
+        fighter.state.log.wounds["Generic"].serious_wounds = 4
+        result = fighter.resolve_post_damage_counterattack("Generic", 5, 20)
+        assert result == 0
+
+    def test_consumed_die_none_guard(self) -> None:
+        """Line 444: consumed is None guard in post-damage counter."""
+        from unittest.mock import patch
+
+        fighter = _make_fighter(knack_rank=5, fire=4, counterattack_rank=5)
+        fighter.actions_remaining = [3, 5, 7]
+        with patch.object(fighter, "_consume_cheapest_die", return_value=None):
+            result = fighter.resolve_post_damage_counterattack("Generic", 5, 20)
+        assert result == 0
+
+
+class TestShouldReplaceWoundCheck5thDan:
+    """5th Dan wound check replacement considers counterattack margin."""
+
+    def test_5th_dan_counterattack_margin_factored_in(self) -> None:
+        """Line 494: 5th Dan expected_total includes _counterattack_margin."""
+        fighter = _make_fighter(knack_rank=5, water=2, void_points=0)
+        fighter._counterattack_margin = 50
+        # Without margin: kept=2, expected = 13. LW 60 → 5 SW → replace.
+        # With margin 50: expected = 13+50=63. LW 60 → 0 SW → no replace.
+        should, sw, note = fighter.should_replace_wound_check(60)
+        assert should is False
+
+
 class TestSimulationIntegration:
     """Hida can complete a full combat simulation."""
 

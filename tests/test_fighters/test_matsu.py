@@ -324,6 +324,172 @@ class TestOnWoundCheckFailed:
         assert note == ""
 
 
+class TestMatsuAttackChoiceFunction:
+    """Tests for _matsu_attack_choice helper covering edge cases."""
+
+    def test_lunge_with_void_spend_when_no_da(self) -> None:
+        """When no DA, lunge with void spend if expected < base_tn."""
+        from src.engine.fighters.matsu import _matsu_attack_choice
+
+        # Low lunge_rank + low fire = low expected, high parry = high TN
+        # Forces the deficit path to spend void on lunge
+        choice, void_spend = _matsu_attack_choice(
+            lunge_rank=1,
+            double_attack_rank=0,
+            attack_skill=3,
+            fire_ring=1,
+            defender_parry=5,
+            void_available=5,
+            max_void_spend=3,
+            dan=1,
+            is_crippled=False,
+        )
+        assert choice == "lunge"
+        assert void_spend > 0
+
+    def test_lunge_no_void_when_expected_meets_tn(self) -> None:
+        """When no DA and expected >= base_tn, lunge without void."""
+        from src.engine.fighters.matsu import _matsu_attack_choice
+
+        # High lunge + fire vs low parry → expected >= base_tn
+        choice, void_spend = _matsu_attack_choice(
+            lunge_rank=5,
+            double_attack_rank=0,
+            attack_skill=3,
+            fire_ring=5,
+            defender_parry=1,
+            void_available=5,
+            max_void_spend=3,
+            dan=1,
+            is_crippled=False,
+        )
+        assert choice == "lunge"
+        assert void_spend == 0
+
+    def test_4th_dan_da_with_deficit(self) -> None:
+        """4th Dan: DA with deficit when effective_da_tn is reachable."""
+        from src.engine.fighters.matsu import _matsu_attack_choice
+
+        # At 4th Dan, effective_da_tn = base_tn = 5+5*3 = 20
+        # da_rolled = 1+1+1 = 3, da_kept = 1
+        # da_expected = estimate_roll(3, 1) = 7.5 < 20
+        # usable_void = min(5, 1) = 1 (dan >= 3)
+        # max_void_boost = 1*5.5 = 5.5
+        # da_expected + max_void_boost = 13 >= 20*0.6 = 12 → viable with deficit
+        choice, void_spend = _matsu_attack_choice(
+            lunge_rank=1,
+            double_attack_rank=1,
+            attack_skill=3,
+            fire_ring=1,
+            defender_parry=3,
+            void_available=5,
+            max_void_spend=1,
+            dan=4,
+            is_crippled=False,
+        )
+        assert choice == "double_attack"
+        assert void_spend > 0
+
+    def test_pre_4th_dan_da_with_deficit(self) -> None:
+        """Pre-4th Dan: DA with deficit when da_tn is reachable."""
+        from src.engine.fighters.matsu import _matsu_attack_choice
+
+        # dan=2, fire=3, da_rank=3, defender_parry=1
+        # da_rolled = 3+3+1 = 7, da_kept = 3
+        # da_expected = estimate_roll(7, 3) = 22.5
+        # da_tn = 10+20 = 30
+        # usable_void = min(5-1, 3) = 3 (dan < 3)
+        # max_void_boost = 3*5.5 = 16.5
+        # 22.5 + 16.5 = 39 >= 30*0.85 = 25.5 → viable
+        # 22.5 < 30 → deficit path
+        choice, void_spend = _matsu_attack_choice(
+            lunge_rank=3,
+            double_attack_rank=3,
+            attack_skill=3,
+            fire_ring=3,
+            defender_parry=1,
+            void_available=5,
+            max_void_spend=3,
+            dan=2,
+            is_crippled=False,
+        )
+        assert choice == "double_attack"
+        assert void_spend > 0
+
+    def test_da_not_viable_lunge_with_void(self) -> None:
+        """When DA is not viable (pre-4th Dan, high TN), fall back to lunge."""
+        from src.engine.fighters.matsu import _matsu_attack_choice
+
+        # DA rank exists but TN is too high for DA to be viable
+        # da_expected + max_void_boost < da_tn * 0.85
+        # Lunge expected < base_tn, usable_void > 0 → lunge with void
+        choice, void_spend = _matsu_attack_choice(
+            lunge_rank=1,
+            double_attack_rank=1,
+            attack_skill=2,
+            fire_ring=2,
+            defender_parry=6,
+            void_available=5,
+            max_void_spend=2,
+            dan=2,
+            is_crippled=False,
+        )
+        assert choice == "lunge"
+        assert void_spend > 0
+
+    def test_4th_dan_da_no_void_when_expected_meets_tn(self) -> None:
+        """4th Dan: DA with no void when da_expected >= effective_da_tn."""
+        from src.engine.fighters.matsu import _matsu_attack_choice
+
+        # da_expected = estimate_roll(7, 3) = 22.5
+        # effective_da_tn = 5+5*1 = 10
+        # 22.5 >= 10 → return "double_attack", 0
+        choice, void_spend = _matsu_attack_choice(
+            lunge_rank=3,
+            double_attack_rank=3,
+            attack_skill=3,
+            fire_ring=3,
+            defender_parry=1,
+            void_available=5,
+            max_void_spend=3,
+            dan=4,
+            is_crippled=False,
+        )
+        assert choice == "double_attack"
+        assert void_spend == 0
+
+    def test_pre_4th_dan_da_no_void_when_expected_meets_tn(self) -> None:
+        """Pre-4th Dan: DA with no void when da_expected >= da_tn."""
+        from src.engine.fighters.matsu import _matsu_attack_choice
+
+        # da_expected = estimate_roll(11, 5) ~= 40.9
+        # da_tn = 5+5*0+20 = 25
+        # 40.9 >= 25 → return "double_attack", 0
+        choice, void_spend = _matsu_attack_choice(
+            lunge_rank=5,
+            double_attack_rank=5,
+            attack_skill=5,
+            fire_ring=5,
+            defender_parry=0,
+            void_available=5,
+            max_void_spend=5,
+            dan=2,
+            is_crippled=False,
+        )
+        assert choice == "double_attack"
+        assert void_spend == 0
+
+
+class TestNearMissDaDescription:
+    """near_miss_da_description returns description string."""
+
+    def test_description_content(self) -> None:
+        """near_miss_da_description includes matsu 4th Dan info."""
+        fighter = _make_fighter(knack_rank=4)
+        desc = fighter.near_miss_da_description()
+        assert "matsu 4th Dan" in desc
+
+
 class TestFactoryCreatesMatsu:
     """create_fighter returns MatsuFighter for Matsu Bushi."""
 

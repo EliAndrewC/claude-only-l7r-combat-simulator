@@ -202,6 +202,28 @@ class Fighter:
         """Cancel incoming attack with defensive SA (default: no cancel)."""
         return ""
 
+    def try_cancel_before_damage(
+        self,
+        attack_total: int,
+        tn: int,
+        attacker_name: str,
+        phase: int,
+    ) -> tuple[bool, str]:
+        """Cancel incoming attack before damage is rolled (default: no cancel)."""
+        return False, ""
+
+    def defend_against_attack(
+        self, attack_total: int, tn: int, attacker_name: str,
+    ) -> tuple[int, str]:
+        """Penalize opponent's attack roll after seeing result (default: none)."""
+        return 0, ""
+
+    def penalize_opponent_wound_check(
+        self, wc_total: int, wc_tn: int, defender_name: str,
+    ) -> tuple[int, str]:
+        """Penalize opponent's wound check after seeing result (default: none)."""
+        return 0, ""
+
     def damage_min_rolled(
         self, current_rolled: int, parry_attempted: bool, extra_kept: int,
     ) -> int:
@@ -243,8 +265,13 @@ class Fighter:
     def on_feint_result(
         self, feint_landed: bool, phase: int,
         defender_name: str = "", void_spent: int = 0,
+        *, feint_met_tn: bool = False,
     ) -> None:
         """Called after every feint attempt (default: no-op)."""
+
+    def consume_sa_tn_bonus(self) -> tuple[int, str]:
+        """Consume SA-based TN reduction for next attack (default: none)."""
+        return 0, ""
 
     def consume_free_raise_bonus(self) -> tuple[int, str]:
         """Consume accumulated free raises. Returns (bonus, description_note)."""
@@ -419,6 +446,9 @@ class Fighter:
 
     # -- Post-attack hooks (Wave Man abilities) -------------------------
 
+    def on_attack_parried(self, parry_succeeded: bool) -> None:
+        """Notification when this fighter's attack is parried (success or fail)."""
+
     def post_attack_miss_bonus(self, attack_total: int, tn: int) -> tuple[int, bool, str]:
         """Bonus after attack misses. Returns (bonus, parry_auto_succeeds, note)."""
         return 0, False, ""
@@ -426,6 +456,17 @@ class Fighter:
     def attacker_parry_tn_bonus(self) -> int:
         """Flat bonus to parry TN applied by ATTACKER."""
         return 0
+
+    def damage_ring_value(self) -> int:
+        """Ring value added to rolled damage dice (default: Fire)."""
+        return self.char.rings.fire.value
+
+    def defender_tn_penalty(self) -> tuple[int, str]:
+        """TN reduction when this fighter is being attacked (default: 0).
+
+        Returns (penalty, note). Penalty is subtracted from the TN.
+        """
+        return 0, ""
 
     def weapon_rolled_boost(self, weapon_rolled: int, weapon_kept: int) -> int:
         """Boosted weapon rolled dice count. Returns new rolled value."""
@@ -590,6 +631,16 @@ class Fighter:
             Tuple of (reset_value, description_note).
         """
         return 0, ""
+
+    def reflect_damage_after_wc(
+        self, damage_taken: int, attacker_name: str,
+    ) -> tuple[int, int, str]:
+        """Reflect damage back to attacker after wound check (default: none).
+
+        Returns:
+            Tuple of (opponent_lw, self_lw, description_note).
+        """
+        return 0, 0, ""
 
     def post_roll_modify(
         self,

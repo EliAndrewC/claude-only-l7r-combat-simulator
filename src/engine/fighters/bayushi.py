@@ -278,6 +278,7 @@ class BayushiFighter(Fighter):
     def on_feint_result(
         self, feint_landed: bool, phase: int,
         defender_name: str = "", void_spent: int = 0,
+        *, feint_met_tn: bool = False,
     ) -> None:
         """3rd Dan: feint damage. 4th Dan: store free raise. Track count."""
         self.feints_this_round += 1

@@ -115,10 +115,11 @@ def roll_damage(
     weapon_kept: int,
     extra_dice: int = 0,
     extra_kept: int = 0,
+    damage_ring: int | None = None,
 ) -> CombatAction:
     """Roll damage for a successful attack.
 
-    Damage dice = weapon_rolled + Fire ring + extra_dice, keep weapon_kept + extra_kept.
+    Damage dice = weapon_rolled + damage_ring + extra_dice, keep weapon_kept + extra_kept.
 
     Args:
         attacker: The attacking character.
@@ -126,12 +127,13 @@ def roll_damage(
         weapon_kept: Base kept dice from weapon.
         extra_dice: Bonus rolled dice (e.g., from raises).
         extra_kept: Bonus kept dice (e.g., from Bayushi SA).
+        damage_ring: Ring value for damage (default: Fire).
 
     Returns:
         A CombatAction recording the damage roll.
     """
-    fire = attacker.rings.fire.value
-    rolled = weapon_rolled + fire + extra_dice
+    ring_val = damage_ring if damage_ring is not None else attacker.rings.fire.value
+    rolled = weapon_rolled + ring_val + extra_dice
     kept = weapon_kept + extra_kept
 
     all_dice, kept_dice, total = roll_and_keep(rolled, kept, explode=True)

@@ -297,6 +297,16 @@ def _resolve_attack(
         tn -= parry_tn_red
         attacker_fighter.parry_tn_reduction = 0
 
+    # SA-based TN reduction (e.g. Ide Diplomat feint SA)
+    sa_tn_bonus, sa_tn_note = attacker_fighter.consume_sa_tn_bonus()
+    if sa_tn_bonus > 0:
+        tn = max(5, tn - sa_tn_bonus)
+
+    # Defender TN penalty (e.g. Isawa Duelist 3rd Dan self-debuff)
+    def_tn_penalty, def_tn_note = defender_fighter.defender_tn_penalty()
+    if def_tn_penalty > 0:
+        tn = max(5, tn - def_tn_penalty)
+
     # Save TN after all reductions but before DA +20 for extra dice calc
     base_tn = tn
 
@@ -701,8 +711,23 @@ def _resolve_attack(
     if force_parry_note:
         attack_action.description += force_parry_note
 
+    # SA TN reduction note (e.g. Ide Diplomat feint SA)
+    if sa_tn_note:
+        attack_action.description += sa_tn_note
+
     attack_action.status_after = state.snapshot_status()
     log.add_action(attack_action)
+
+    # --- 3rd Dan opponent attack penalty (e.g. Ide Diplomat) ---
+    if attack_action.success:
+        def_penalty, def_pen_note = defender_fighter.defend_against_attack(
+            attack_action.total, tn, attacker_name,
+        )
+        if def_penalty > 0:
+            attack_action.total -= def_penalty
+            attack_action.success = attack_action.total >= tn
+            attack_action.description += def_pen_note
+            attack_action.status_after = state.snapshot_status()
 
     # --- 5th Dan defensive SA (Ikoma Bard): cancel attack, store parry ---
     if attack_action.success:
@@ -1060,6 +1085,9 @@ def _resolve_attack(
 
         parry_action.status_after = state.snapshot_status()
 
+        # Notify attacker that their attack was parried
+        attacker_fighter.on_attack_parried(parry_succeeded)
+
         if parry_succeeded:
             # SA counter-lunge fires even after successful parry
             if (
@@ -1137,6 +1165,7 @@ def _resolve_attack(
         # Fighter hook for school-specific feint effects
         attacker_fighter.on_feint_result(
             feint_landed, phase, defender_name, total_attack_void,
+            feint_met_tn=attack_action.success,
         )
 
         attack_action.status_after = state.snapshot_status()
@@ -1150,6 +1179,16 @@ def _resolve_attack(
                 _resolve_attack(
                     state, attacker_fighter, defender_fighter, phase,
                 )
+        return
+
+    # --- 5th Dan pre-damage counterattack (e.g. Brotherhood Monk) ---
+    cancel_result, cancel_note = defender_fighter.try_cancel_before_damage(
+        attack_action.total, tn, attacker_name, phase,
+    )
+    if cancel_note:
+        attack_action.description += cancel_note
+        attack_action.status_after = state.snapshot_status()
+    if cancel_result:
         return
 
     # --- Roll damage ---
@@ -1223,8 +1262,11 @@ def _resolve_attack(
     extra_dmg = extra_dice + da_extra_rolled + sa_dmg_rolled
     dmg_extra_kept = sa_dmg_kept
 
+    # Damage ring value (default Fire; Isawa Duelist uses Water)
+    dmg_ring = attacker_fighter.damage_ring_value()
+
     # 4th Dan minimum rolled (Ikoma Bard: 10 dice on unparried, no extra kept)
-    base_rolled = boosted_rolled + attacker.rings.fire.value + extra_dmg
+    base_rolled = boosted_rolled + dmg_ring + extra_dmg
     min_rolled = attacker_fighter.damage_min_rolled(
         base_rolled, parry_attempted, dmg_extra_kept,
     )
@@ -1236,12 +1278,13 @@ def _resolve_attack(
     damage_action = roll_damage(
         attacker, boosted_rolled, weapon.kept, extra_dmg,
         extra_kept=dmg_extra_kept,
+        damage_ring=dmg_ring,
     )
     damage_action.phase = phase
     damage_action.target = defender_name
     # Show overflow conversion in damage dice pool
     dmg_rolled = (
-        boosted_rolled + attacker.rings.fire.value
+        boosted_rolled + dmg_ring
         + extra_dmg
     )
     dmg_kept_total = weapon.kept + dmg_extra_kept
@@ -1443,6 +1486,17 @@ def _resolve_attack(
             wc_total = new_total
             passed = new_passed
 
+    # 3rd Dan opponent WC penalty (e.g. Ide Diplomat)
+    if passed:
+        wc_penalty, wc_pen_note = attacker_fighter.penalize_opponent_wound_check(
+            wc_total, wound_tracker.light_wounds + ab10_bonus, defender_name,
+        )
+        if wc_penalty > 0:
+            wc_total -= wc_penalty
+            effective_tn = wound_tracker.light_wounds + ab10_bonus
+            passed = wc_total >= effective_tn
+            wc_bonus_note += wc_pen_note
+
     void_note = f" ({wc_void_label})" if wc_void_label else ""
 
     # Record the TN before any conversion modifies light_wounds
@@ -1522,6 +1576,51 @@ def _resolve_attack(
 
     # Snapshot after wound check (reflects serious wound promotion if failed)
     wc_action.status_after = state.snapshot_status()
+
+    # Damage reflection via Fighter hook (e.g. Kuni 5th Dan)
+    if (
+        not log.wounds[attacker_name].is_mortally_wounded
+        and not log.wounds[defender_name].is_mortally_wounded
+    ):
+        reflect_opp, reflect_self, reflect_note = (
+            defender_fighter.reflect_damage_after_wc(
+                damage_action.total, attacker_name,
+            )
+        )
+        if reflect_opp > 0 or reflect_self > 0:
+            wc_action.description += reflect_note
+            if reflect_self > 0:
+                wound_tracker.light_wounds += reflect_self
+            if reflect_opp > 0:
+                atk_wounds = log.wounds[attacker_name]
+                atk_wounds.light_wounds += reflect_opp
+                # Simplified wound check for reflected damage
+                atk_water = attacker.rings.water.value
+                ref_passed, ref_total, ref_all, ref_kept = make_wound_check(
+                    atk_wounds, atk_water,
+                )
+                ref_wc = CombatAction(
+                    phase=phase,
+                    actor=attacker_name,
+                    action_type=ActionType.WOUND_CHECK,
+                    dice_rolled=ref_all,
+                    dice_kept=ref_kept,
+                    total=ref_total,
+                    tn=atk_wounds.light_wounds,
+                    success=ref_passed,
+                    description=(
+                        f"{attacker_name} wound check"
+                        f" (reflected damage):"
+                        f" {'passed' if ref_passed else 'failed'}"
+                        f" (rolled {ref_total})"
+                    ),
+                    dice_pool=f"{len(ref_all)}k{len(ref_kept)}",
+                )
+                log.add_action(ref_wc)
+                if not ref_passed:
+                    atk_wounds.light_wounds = 0
+                ref_wc.status_after = state.snapshot_status()
+            wc_action.status_after = state.snapshot_status()
 
     # Post-attack interrupt via Fighter hook (e.g. Otaku SA counter-lunge)
     if (

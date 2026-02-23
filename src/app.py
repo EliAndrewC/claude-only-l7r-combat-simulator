@@ -252,14 +252,15 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     st.sidebar.header(f"{label}")
 
     build_options = [
-        "Base", "Wave Man", "Akodo Bushi", "Mirumoto Bushi",
-        "Matsu Bushi", "Kakita Duelist", "Shinjo Bushi",
-        "Otaku Bushi", "Daidoji Yojimbo", "Doji Artisan",
-        "Hida Bushi", "Hiruma Scout", "Ide Diplomat", "Ikoma Bard",
-        "Isawa Duelist", "Isawa Ishi", "Kitsuki Magistrate",
-        "Kuni Witch Hunter", "Shosuro Actor",
-        "Shiba Bushi", "Bayushi Bushi", "Brotherhood Monk",
+        "Base", "Wave Man",
         "Courtier", "Merchant", "Priest",
+        "Akodo Bushi", "Bayushi Bushi", "Brotherhood Monk",
+        "Daidoji Yojimbo", "Doji Artisan", "Hida Bushi",
+        "Hiruma Scout", "Ide Diplomat", "Ikoma Bard",
+        "Isawa Duelist", "Isawa Ishi", "Kakita Duelist",
+        "Kitsuki Magistrate", "Kuni Witch Hunter",
+        "Matsu Bushi", "Mirumoto Bushi", "Otaku Bushi",
+        "Shiba Bushi", "Shinjo Bushi", "Shosuro Actor",
         "Togashi Ise Zumi", "Yogo Warden",
     ]
     build_choice = st.sidebar.selectbox(

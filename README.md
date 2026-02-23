@@ -14,6 +14,12 @@ podman run --interactive --tty --rm \
   bash
 ```
 
+or
+
+```
+docker run -it --rm --name claude-only -v "$(pwd):/workspace" -p 8501:8501 claude-code-sandbox:latest bash
+```
+
 ## Setup
 
 Requires Python 3.10+.

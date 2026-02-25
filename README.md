@@ -7,7 +7,7 @@ A tabletop RPG combat simulator based on custom L7R (Legend of the Five Rings) h
 ```bash
 podman run --interactive --tty --rm \
   --name claude-only \
-  --userns keep-id \
+  --userns keep-id:uid=1000,gid=1000 \
   --user "$(id -u):$(id -g)" \
   --volume "$(pwd)":/home/agent/workspace/l7r \
   --publish 8501:8501 \
@@ -15,7 +15,7 @@ podman run --interactive --tty --rm \
   bash
 ```
 
-or
+or on Docker:
 
 ```
 docker run -it --rm --name claude-only -v "$(pwd):/workspace" -p 8501:8501 claude-code-sandbox:latest bash

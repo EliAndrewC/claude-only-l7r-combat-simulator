@@ -21,8 +21,11 @@ This will eventually involve:
 - Style: PEP 8, Type Hints (Strict)
 
 ## Architecture
-1. **Core Engine**: Pure logic, implemented based on `./rules`, which has the human-readable rules
-2. **Simulation**: Handles initiative, attacking, parrying, special actions, damage, wounds, win conditions, etc.
+1. **Core Engine**: Pure logic, implemented based on the human-readable rules at
+    https://github.com/EliAndrewC/l7r/tree/master/rules (all rules are in that
+    directory, so you can ignore other directories in that Git repo)
+2. **Simulation**: Handles initiative, attacking, parrying, special actions,
+    damage, wounds, win conditions, etc.
 3. **UI**: Streamlit interface to visualize the dice rolls and outcomes.
 
 ## Development Commands
@@ -32,6 +35,7 @@ This will eventually involve:
 - Lint: `ruff check .`
 
 ## Project Rules
-- **TDD First**: Always write a failing test in `tests/` before writing the code (linting should also always pass).
-- **Logic Isolation**: Keep the combat math 100% separate from the UI code.
+- **TDD First**: Always write a failing test in `tests/` before writing the code
+- **Linting**: should also always pass, with issues fixed after each step
 - **Coverage**: Maintain >90% code coverage.
+- **Logic Isolation**: Keep the combat math 100% separate from the UI code.

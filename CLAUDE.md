@@ -23,7 +23,9 @@ This will eventually involve:
 ## Architecture
 1. **Core Engine**: Pure logic, implemented based on the human-readable rules at
     https://github.com/EliAndrewC/l7r/tree/master/rules (all rules are in that
-    directory, so you can ignore other directories in that Git repo)
+    directory, so you can ignore other directories in that Git repo and also
+    ignore the Between Place and Spirit Encounter rules, which will never be
+    covered by this simulator)
 2. **Simulation**: Handles initiative, attacking, parrying, special actions,
     damage, wounds, win conditions, etc.
 3. **UI**: Streamlit interface to visualize the dice rolls and outcomes.

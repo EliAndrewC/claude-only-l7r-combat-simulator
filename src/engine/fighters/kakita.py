@@ -317,6 +317,7 @@ def _resolve_kakita_phase0_attack(
             water_ring=water_value,
             shinjo_wc_bonus_pool=def_shinjo_pool,
             lw_severity_divisor=def_ctx.wound_check_lw_severity_divisor(),
+            mortal_wound_threshold=wound_tracker.mortal_wound_threshold,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -618,6 +619,7 @@ def _resolve_kakita_5th_dan(
             water_ring=water_value,
             shinjo_wc_bonus_pool=def_shinjo_pool,
             lw_severity_divisor=def_ctx.wound_check_lw_severity_divisor(),
+            mortal_wound_threshold=wound_tracker.mortal_wound_threshold,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -736,6 +738,48 @@ class KakitaFighter(Fighter):
     def attack_extra_rolled(self) -> int:
         """1st Dan: +1 rolled die on attack."""
         return 1 if self.dan >= 1 else 0
+
+    # -- Duel hooks ---------------------------------------------------------
+
+    def duel_iaijutsu_extra_rolled(self) -> int:
+        """1st Dan: +1 rolled die on iaijutsu in duels."""
+        return 1 if self.dan >= 1 else 0
+
+    def duel_iaijutsu_flat_bonus(self) -> tuple[int, str]:
+        """2nd Dan: free raise (+5) on iaijutsu rolls in duels."""
+        if self.dan >= 2:
+            return 5, " (2nd Dan +5)"
+        return 0, ""
+
+    def duel_damage_flat_bonus(self) -> tuple[int, str]:
+        """4th Dan: +5 on iaijutsu damage in duels."""
+        if self.dan >= 4:
+            return 5, "4th Dan +5"
+        return 0, ""
+
+    def should_duel_focus(
+        self,
+        my_focus: int,
+        opp_focus: int,
+        my_tn: int = 0,
+        opp_tn: int = 0,
+        my_rolled: int = 0,
+        my_kept: int = 0,
+        opp_rolled: int = 0,
+        opp_kept: int = 0,
+        my_flat_bonus: int = 0,
+        opp_flat_bonus: int = 0,
+    ) -> bool:
+        """Kakita: use base heuristic but always focus at least twice."""
+        if my_focus < 2:
+            return True
+        return super().should_duel_focus(
+            my_focus, opp_focus,
+            my_tn=my_tn, opp_tn=opp_tn,
+            my_rolled=my_rolled, my_kept=my_kept,
+            opp_rolled=opp_rolled, opp_kept=opp_kept,
+            my_flat_bonus=my_flat_bonus, opp_flat_bonus=opp_flat_bonus,
+        )
 
     def attack_void_strategy(
         self, rolled: int, kept: int, tn: int

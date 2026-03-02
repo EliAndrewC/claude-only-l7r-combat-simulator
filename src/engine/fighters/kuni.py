@@ -170,9 +170,8 @@ class KuniWitchHunterFighter(Fighter):
         if deficit <= 0:
             return passed, wc_total, ""
 
-        earth = wound_tracker.earth_ring
         current_sw = 1 + deficit // 10
-        would_die = (sw_before_wc + current_sw >= 2 * earth)
+        would_die = (sw_before_wc + current_sw >= wound_tracker.mortal_wound_threshold)
 
         usable = min(self._max_per_roll, self._free_raises)
         best_sw = current_sw
@@ -241,12 +240,11 @@ class KuniWitchHunterFighter(Fighter):
         pool_bonus = self.wc_bonus_pool_total()
         expected_wc += pool_bonus
 
-        earth = wound_info.earth_ring
         existing_sw = wound_info.serious_wounds
         if projected_lw > expected_wc:
             wc_deficit = projected_lw - expected_wc
             projected_sw = 1 + int(wc_deficit) // 10
-            if existing_sw + projected_sw >= 2 * earth:
+            if existing_sw + projected_sw >= wound_info.mortal_wound_threshold:
                 return 0, 0, ""  # Would die from extra damage
 
         note = (
@@ -298,6 +296,5 @@ class KuniWitchHunterFighter(Fighter):
             return False
         projected_sw = 1 + int(wc_deficit) // 10
 
-        earth = wound_info.earth_ring
         existing_sw = wound_info.serious_wounds
-        return existing_sw + projected_sw >= 2 * earth
+        return existing_sw + projected_sw >= wound_info.mortal_wound_threshold

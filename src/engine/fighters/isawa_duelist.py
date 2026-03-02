@@ -19,13 +19,48 @@ from src.engine.simulation_utils import should_spend_void_on_combat_roll
 class IsawaDuelistFighter(Fighter):
     """Isawa Duelist fighter with school technique overrides."""
 
+    _in_counter_lunge: bool = False
+    _pending_die: int | None = None
+    _force_lunge: bool = False
+    _counter_lunge_used_this_round: bool = False
+
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
         self._tn_penalty_pending: bool = False
         self._wc_bonus_pool: int = 0
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
+        self._in_counter_lunge = False
+        self._counter_lunge_used_this_round = False
+        self._pending_die = None
+        self._force_lunge = False
+
+    # -- Round hooks --------------------------------------------------------
+
+    def on_round_start(self) -> None:
+        """Reset per-round state."""
+        self._counter_lunge_used_this_round = False
+
+    # -- Die management for interrupt lunge ---------------------------------
+
+    def set_pending_die(self, value: int) -> None:
+        """Store a pending die value for the next consume_attack_die call."""
+        self._pending_die = value
+
+    def consume_attack_die(
+        self, phase: int, die_value: int | None = None,
+    ) -> int | None:
+        """Consume a die for attacking, checking pending die first."""
+        if die_value is None and self._pending_die is not None:
+            die_value = self._pending_die
+            self._pending_die = None
+        if die_value is not None:
+            if die_value in self.actions_remaining:
+                self.actions_remaining.remove(die_value)
+                return die_value
+            return None
+        if phase in self.actions_remaining:
+            self.actions_remaining.remove(phase)
+            return phase
+        return None
 
     # -- SA: Water for damage instead of Fire --------------------------------
 
@@ -39,6 +74,8 @@ class IsawaDuelistFighter(Fighter):
         self, defender_name: str, phase: int,
     ) -> tuple[str, int]:
         """Isawa Duelist prefers DA when available, else lunge, else attack."""
+        if self._force_lunge:
+            return "lunge", 0
         da_skill = self.char.get_skill("Double Attack")
         da_rank = da_skill.rank if da_skill else 0
         lunge_skill = self.char.get_skill("Lunge")
@@ -141,3 +178,46 @@ class IsawaDuelistFighter(Fighter):
             if excess > 0:
                 self._wc_bonus_pool += excess
         return passed, wc_total, ""
+
+    # -- 4th Dan: Interrupt lunge -------------------------------------------
+
+    def resolve_post_attack_interrupt(
+        self, attacker_name: str, phase: int,
+        attack_total: int = 0,
+    ) -> None:
+        """4th Dan: After being attacked, counter-lunge using cheapest die.
+
+        Once per round. Guards against recursion.
+        """
+        if self.dan < 4:
+            return
+        if self._in_counter_lunge:
+            return
+        if self._counter_lunge_used_this_round:
+            return
+
+        # Need dice to counter-lunge
+        if not self.actions_remaining:
+            return
+
+        # Don't counter if mortally wounded
+        if self.state.log.wounds[self.name].is_mortally_wounded:
+            return
+        if self.state.log.wounds[attacker_name].is_mortally_wounded:
+            return
+
+        from src.engine.simulation import _resolve_attack
+
+        # Consume cheapest die
+        cheapest = min(self.actions_remaining)
+        self.set_pending_die(cheapest)
+
+        self._in_counter_lunge = True
+        self._force_lunge = True
+        self._counter_lunge_used_this_round = True
+        try:
+            attacker_f = self.state.fighters[attacker_name]
+            _resolve_attack(self.state, self, attacker_f, phase)
+        finally:
+            self._in_counter_lunge = False
+            self._force_lunge = False

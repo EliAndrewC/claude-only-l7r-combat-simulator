@@ -44,7 +44,10 @@ class Fighter:
         self._weapon = weapon
         self.void_points = void_points
         self.temp_void = temp_void
-        self.worldliness_void = 0
+        worldliness_skill = (
+            char.get_skill("Worldliness") if char is not None else None
+        )
+        self.worldliness_void = worldliness_skill.rank if worldliness_skill else 0
         self.dan_points = dan_points
         self.actions_remaining = actions_remaining if actions_remaining is not None else []
         self.matsu_bonuses = matsu_bonuses if matsu_bonuses is not None else []
@@ -53,6 +56,9 @@ class Fighter:
         self.parry_tn_reduction = 0
         self.feint_free_raises = 0
         self._stored_parry_total = 0
+        self.lucky_used = False
+        self.duel_contested_bonus = 0
+        self.in_duel = False
 
     # -- Convenience accessors ------------------------------------------
 
@@ -105,6 +111,75 @@ class Fighter:
     @property
     def opponent_name(self) -> str:
         return self._state.get_opponent(self._name)
+
+    # -- Combat-start hooks -----------------------------------------------
+
+    def apply_5th_dan_debuff(self, opponent_name: str) -> str:
+        """Apply combat-start debuff to opponent (default no-op).
+
+        Returns a description note if a debuff was applied.
+        """
+        return ""
+
+    # -- Duel hooks -----------------------------------------------------
+
+    def duel_iaijutsu_extra_rolled(self) -> int:
+        """Extra rolled dice on iaijutsu in a duel (default 0)."""
+        return 0
+
+    def duel_iaijutsu_flat_bonus(self) -> tuple[int, str]:
+        """Flat bonus on iaijutsu rolls in a duel. Returns (bonus, note)."""
+        return 0, ""
+
+    def duel_damage_flat_bonus(self) -> tuple[int, str]:
+        """Flat bonus to iaijutsu damage in a duel. Returns (bonus, note)."""
+        return 0, ""
+
+    def should_duel_focus(
+        self,
+        my_focus: int,
+        opp_focus: int,
+        my_tn: int = 0,
+        opp_tn: int = 0,
+        my_rolled: int = 0,
+        my_kept: int = 0,
+        opp_rolled: int = 0,
+        opp_kept: int = 0,
+        my_flat_bonus: int = 0,
+        opp_flat_bonus: int = 0,
+    ) -> bool:
+        """Whether to focus (raise own TN by 5) or strike.
+
+        Focus raises my_tn by 5, making me harder to hit but not helping
+        my own attack.  The default heuristic focuses while the opponent's
+        expected roll comfortably exceeds my current TN.
+        """
+        from src.engine.simulation_utils import estimate_roll
+
+        my_expected = estimate_roll(my_rolled, my_kept) + my_flat_bonus
+        opp_expected = estimate_roll(opp_rolled, opp_kept) + opp_flat_bonus
+
+        # How far above my TN the opponent is expected to land
+        opp_margin = opp_expected - my_tn
+        # How far above opponent's TN I'm expected to land
+        my_margin = my_expected - opp_tn
+
+        # Focus if the opponent is expected to hit me (margin > 0)
+        # AND I still expect to hit them even after they might focus once
+        # (i.e. I can afford to raise my own TN without becoming unable to hit).
+        # Stop focusing if my expected roll can no longer beat the opponent's
+        # TN (even without further focus by them), since raising my own TN
+        # is pointless if I can't hit anyway.
+        if my_margin < 0:
+            # I'm already unlikely to hit — strike now, focusing won't help
+            return False
+
+        if opp_margin > 0:
+            # Opponent is expected to hit me — focus to raise my TN
+            return True
+
+        # Opponent is already unlikely to hit me — strike
+        return False
 
     # -- Initiative hooks -----------------------------------------------
 
@@ -537,6 +612,7 @@ class Fighter:
 
     def resolve_post_attack_interrupt(
         self, attacker_name: str, phase: int,
+        attack_total: int = 0,
     ) -> None:
         """Reactive action after being attacked (default: no-op)."""
 
@@ -596,6 +672,54 @@ class Fighter:
         for die in consumed:
             self.actions_remaining.remove(die)
         return consumed, 0
+
+    def advantage_wound_check_flat_bonus(self) -> tuple[int, str]:
+        """Flat wound check bonus from advantages (Strength of the Earth = +5).
+
+        Returns:
+            Tuple of (bonus_amount, description_note).
+        """
+        from src.models.character import Advantage
+
+        if Advantage.STRENGTH_OF_THE_EARTH in self.char.advantages:
+            return 5, " (+5 Strength of the Earth)"
+        return 0, ""
+
+    def should_use_lucky_reroll(self, serious_wounds_taken: int) -> bool:
+        """Whether to use the Lucky advantage to reroll a failed wound check.
+
+        Lucky triggers when a failed wound check inflicts 2+ serious wounds
+        and hasn't been used yet this combat.
+        """
+        from src.models.character import Advantage
+
+        if self.lucky_used:
+            return False
+        if Advantage.LUCKY not in self.char.advantages:
+            return False
+        return serious_wounds_taken >= 2
+
+    def should_use_lucky_reroll_attack(
+        self, attack_total: int, tn: int,
+    ) -> bool:
+        """Whether to use Lucky to reroll a missed attack.
+
+        Lucky triggers on a near-miss (within 25% of TN) when there are
+        no wound-check scenarios likely to need it more.
+        """
+        from src.models.character import Advantage
+
+        if self.lucky_used:
+            return False
+        if Advantage.LUCKY not in self.char.advantages:
+            return False
+        # Don't burn Lucky on attacks — save for wound checks
+        # unless the character is healthy and the miss is close
+        wound_info = self.state.log.wounds[self.name]
+        if wound_info.serious_wounds > 0:
+            return False
+        deficit = tn - attack_total
+        return 0 < deficit <= max(5, tn // 4)
 
     def wound_check_flat_bonus(self) -> tuple[int, str]:
         """Flat bonus added to wound check total (default 0).

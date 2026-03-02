@@ -47,6 +47,7 @@ from src.engine.simulation_utils import (
     try_phase_shift_parry as _try_phase_shift_parry,
 )
 from src.models.character import (
+    Advantage,
     Character,
     ProfessionAbility,
     Ring,
@@ -347,7 +348,7 @@ class TestSimulateCombatBasic:
         # Either there's a winner or it's a draw (None)
         assert log.winner is None or log.winner in ["Fighter A", "Fighter B"]
 
-    def test_first_actions_are_initiative(self) -> None:
+    def test_first_actions_are_stance_then_initiative(self) -> None:
         a = _make_character("Fighter A")
         b = _make_character("Fighter B")
         log = simulate_combat(a, b, KATANA, KATANA)
@@ -355,7 +356,7 @@ class TestSimulateCombatBasic:
             act for act in log.actions if act.action_type == ActionType.INITIATIVE
         ]
         assert len(init_actions) >= 2
-        # First two actions should be initiative
+        # First two actions should be initiative (stance only in duels)
         assert log.actions[0].action_type == ActionType.INITIATIVE
         assert log.actions[1].action_type == ActionType.INITIATIVE
 
@@ -373,6 +374,29 @@ class TestSimulateCombatBasic:
         action_types = {act.action_type for act in log.actions}
         assert ActionType.INITIATIVE in action_types
         assert ActionType.ATTACK in action_types
+
+
+class TestSimulateCombatMortalWoundModifier:
+    def test_great_destiny_sets_modifier(self) -> None:
+        a = _make_character("GD Fighter", earth=3)
+        a.advantages = [Advantage.GREAT_DESTINY]
+        b = _make_character("Normal", earth=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+        assert log.wounds["GD Fighter"].mortal_wound_modifier == 1
+
+    def test_permanent_wound_sets_modifier(self) -> None:
+        a = _make_character("PW Fighter", earth=3)
+        a.advantages = [Advantage.PERMANENT_WOUND]
+        b = _make_character("Normal", earth=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+        assert log.wounds["PW Fighter"].mortal_wound_modifier == -1
+
+    def test_no_advantages_modifier_zero(self) -> None:
+        a = _make_character("Normal A", earth=3)
+        b = _make_character("Normal B", earth=3)
+        log = simulate_combat(a, b, KATANA, KATANA, max_rounds=1)
+        assert log.wounds["Normal A"].mortal_wound_modifier == 0
+        assert log.wounds["Normal B"].mortal_wound_modifier == 0
 
 
 class TestSimulateCombatMortalWound:

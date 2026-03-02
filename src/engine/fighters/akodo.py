@@ -25,9 +25,6 @@ class AkodoFighter(Fighter):
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
         self._attack_bonus_pool: int = 0
         self._wc_void_spent: int = 0
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
 
     # -- Round hooks --------------------------------------------------------
 

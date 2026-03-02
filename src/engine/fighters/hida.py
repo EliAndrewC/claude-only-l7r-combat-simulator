@@ -198,6 +198,7 @@ def _resolve_hida_counterattack(
             wound_tracker.earth_ring,
             water_ring=water_value,
             lw_severity_divisor=target_ctx.wound_check_lw_severity_divisor(),
+            mortal_wound_threshold=wound_tracker.mortal_wound_threshold,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -479,7 +480,7 @@ class HidaFighter(Fighter):
         Estimates the wound check total (with max void spend) and only
         replaces when the expected serious wounds >= 3.
         """
-        if self.dan < 4:
+        if self.dan < 4 or self.in_duel:
             return False, 0, ""
 
         water = self.char.rings.water.value

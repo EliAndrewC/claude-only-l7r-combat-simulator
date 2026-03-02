@@ -268,11 +268,13 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     )
 
     # --- XP sliders (both modes) ---
+    st.session_state.setdefault(f"{key_prefix}_earned_xp", 0)
     earned_xp = st.sidebar.slider(
-        f"{build_choice} Earned XP", 0, 350, 0, step=10, key=f"{key_prefix}_earned_xp"
+        f"{build_choice} Earned XP", 0, 350, step=10, key=f"{key_prefix}_earned_xp"
     )
+    st.session_state.setdefault(f"{key_prefix}_noncombat", 20)
     non_combat = st.sidebar.slider(
-        f"{build_choice} Non-combat XP %", 0, 50, 20, key=f"{key_prefix}_noncombat"
+        f"{build_choice} Non-combat XP %", 0, 50, key=f"{key_prefix}_noncombat"
     )
 
     # --- School Ring (Base only) ---
@@ -295,20 +297,20 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
     ring_display = ["Air", "Fire", "Earth", "Water", "Void"]
     ring_values: dict[str, int] = {}
     for i, rn in enumerate(ring_display):
-        default = st.session_state.get(f"{key_prefix}_{rn.lower()}", 2)
+        st.session_state.setdefault(f"{key_prefix}_{rn.lower()}", 2)
         ring_values[rn.lower()] = ring_cols[i].number_input(
-            rn, min_value=1, max_value=6, value=default, key=f"{key_prefix}_{rn.lower()}"
+            rn, min_value=1, max_value=6, key=f"{key_prefix}_{rn.lower()}"
         )
 
     # --- Editable attack/parry sliders ---
     st.sidebar.markdown("**Skills**")
-    atk_default = st.session_state.get(f"{key_prefix}_atk", 0)
+    st.session_state.setdefault(f"{key_prefix}_atk", 0)
     atk_rank = st.sidebar.slider(
-        f"{build_choice} Attack", 0, 5, atk_default, key=f"{key_prefix}_atk"
+        f"{build_choice} Attack", 0, 5, key=f"{key_prefix}_atk"
     )
-    parry_default = st.session_state.get(f"{key_prefix}_parry", 0)
+    st.session_state.setdefault(f"{key_prefix}_parry", 0)
     parry_rank = st.sidebar.slider(
-        f"{build_choice} Parry", 0, 5, parry_default, key=f"{key_prefix}_parry"
+        f"{build_choice} Parry", 0, 5, key=f"{key_prefix}_parry"
     )
 
     # --- Knack sliders (school builds only) ---
@@ -321,9 +323,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -353,9 +355,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -381,9 +383,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         knack_display = {"double_attack": "Double Attack", "iaijutsu": "Iaijutsu", "lunge": "Lunge"}
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -409,9 +411,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         knack_display = {"double_attack": "Double Attack", "iaijutsu": "Iaijutsu", "lunge": "Lunge"}
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -437,9 +439,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         knack_display = {"double_attack": "Double Attack", "iaijutsu": "Iaijutsu", "lunge": "Lunge"}
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -465,9 +467,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         knack_display = {"double_attack": "Double Attack", "iaijutsu": "Iaijutsu", "lunge": "Lunge"}
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -497,9 +499,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -529,9 +531,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -557,9 +559,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         knack_display = {"counterattack": "Counterattack", "iaijutsu": "Iaijutsu", "lunge": "Lunge"}
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -589,9 +591,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -621,9 +623,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -653,9 +655,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -685,9 +687,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -717,9 +719,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -749,9 +751,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -781,9 +783,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -813,9 +815,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -845,9 +847,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -877,9 +879,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -909,9 +911,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -941,9 +943,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -973,9 +975,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -1005,9 +1007,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -1037,9 +1039,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -1069,9 +1071,9 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         }
         st.sidebar.markdown("**School Knacks**")
         for knack_key, knack_name in knack_display.items():
-            default = st.session_state.get(f"{key_prefix}_knack_{knack_key}", 1)
+            st.session_state.setdefault(f"{key_prefix}_knack_{knack_key}", 1)
             knack_ranks[knack_key] = st.sidebar.slider(
-                f"{build_choice} {knack_name}", 0, 5, default, key=f"{key_prefix}_knack_{knack_key}"
+                f"{build_choice} {knack_name}", 0, 5, key=f"{key_prefix}_knack_{knack_key}"
             )
         # Dan level display (read-only)
         dan_level = min(knack_ranks.values()) if knack_ranks else 0
@@ -1678,6 +1680,7 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         school_ring=school_ring_val,
         school_knacks=school_knacks_val,
         profession_abilities=profession_abilities,
+        xp_total=150 + earned_xp,
     )
     return char, weapon_type_choice, build_choice
 
@@ -1749,9 +1752,10 @@ render_character_card(char_b, weapon_b, col2)
 
 # --- Fight button ---
 st.divider()
+is_duel = st.checkbox("Iaijutsu Duel", help="Begin with an iaijutsu duel before normal combat")
 if st.button("Fight!", type="primary", use_container_width=True):
     with st.spinner("Simulating combat..."):
-        log = simulate_combat(char_a, char_b, weapon_a, weapon_b)
+        log = simulate_combat(char_a, char_b, weapon_a, weapon_b, is_duel=is_duel)
         st.session_state["combat_log"] = log
 
 # --- Results ---

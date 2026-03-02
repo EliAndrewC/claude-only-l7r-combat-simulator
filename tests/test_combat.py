@@ -232,3 +232,17 @@ class TestCombatLog:
         assert log.combatants == ["A", "B"]
         assert log.wounds["A"].earth_ring == 3
         assert log.wounds["B"].earth_ring == 2
+
+    def test_create_combat_log_default_modifier_zero(self) -> None:
+        log = create_combat_log(["A", "B"], [3, 2])
+        assert log.wounds["A"].mortal_wound_modifier == 0
+        assert log.wounds["B"].mortal_wound_modifier == 0
+
+    def test_create_combat_log_with_modifiers(self) -> None:
+        log = create_combat_log(
+            ["A", "B"], [3, 2], mortal_wound_modifiers=[1, -1],
+        )
+        assert log.wounds["A"].mortal_wound_modifier == 1
+        assert log.wounds["B"].mortal_wound_modifier == -1
+        assert log.wounds["A"].mortal_wound_threshold == 7  # 2*3 + 1
+        assert log.wounds["B"].mortal_wound_threshold == 3  # 2*2 - 1

@@ -6,6 +6,7 @@ from src.engine.combat import create_combat_log
 from src.engine.combat_state import CombatState
 from src.engine.fighters import create_fighter
 from src.models.character import (
+    Advantage,
     Character,
     ProfessionAbility,
     Ring,
@@ -302,6 +303,15 @@ def make_courtier(
     )
 
 
+def _mortal_wound_modifier(char: Character) -> int:
+    """Compute the mortal wound modifier from a character's advantages."""
+    if Advantage.GREAT_DESTINY in char.advantages:
+        return 1
+    if Advantage.PERMANENT_WOUND in char.advantages:
+        return -1
+    return 0
+
+
 def make_combat_state(
     char_a: Character,
     char_b: Character,
@@ -312,6 +322,10 @@ def make_combat_state(
     log = create_combat_log(
         [char_a.name, char_b.name],
         [char_a.rings.earth.value, char_b.rings.earth.value],
+        mortal_wound_modifiers=[
+            _mortal_wound_modifier(char_a),
+            _mortal_wound_modifier(char_b),
+        ],
     )
     state = CombatState(log=log)
     create_fighter(

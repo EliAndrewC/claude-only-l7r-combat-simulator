@@ -46,5 +46,6 @@ class CombatState:
                 dan_points=fighter.dan_points,
                 matsu_bonuses=list(fighter.matsu_bonuses),
                 shinjo_bonuses=list(fighter.shinjo_bonuses),
+                lucky_used=fighter.lucky_used,
             )
         return result

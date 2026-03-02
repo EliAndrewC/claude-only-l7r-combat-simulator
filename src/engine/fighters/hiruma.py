@@ -24,9 +24,6 @@ class HirumaFighter(Fighter):
         self._parry_attack_bonus: int = 0
         self._parry_damage_bonus: int = 0
         self._damage_reduction_charges: int = 0
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
 
     # -- Initiative hooks ---------------------------------------------------
 

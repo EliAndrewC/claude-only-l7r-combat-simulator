@@ -293,15 +293,25 @@ class TestResolvePreAttackCounterattack:
         fighter = _make_fighter(knack_rank=1, counterattack_rank=2)
         fighter.actions_remaining = [3, 5, 7]
         result = fighter.resolve_pre_attack_counterattack("Generic", 5)
-        assert result is True
+        assert result is not None
         assert 3 not in fighter.actions_remaining
+
+    def test_returns_margin_and_zero_penalty(self) -> None:
+        """Counterattack returns (margin, 0) — no SA penalty on attacker."""
+        fighter = _make_fighter(knack_rank=1, counterattack_rank=2)
+        fighter.actions_remaining = [3, 5, 7]
+        result = fighter.resolve_pre_attack_counterattack("Generic", 5)
+        assert result is not None
+        margin, sa_penalty = result
+        assert sa_penalty == 0
+        assert isinstance(margin, int)
 
     def test_sets_wc_bonus_at_3rd_dan(self) -> None:
         """3rd Dan stores counterattack WC bonus = attack_rank * 5."""
         fighter = _make_fighter(knack_rank=3, attack_rank=3, counterattack_rank=3)
         fighter.actions_remaining = [3, 5, 7]
         result = fighter.resolve_pre_attack_counterattack("Generic", 5)
-        assert result is True
+        assert result is not None
         assert fighter._counterattack_wc_bonus == 15  # 3 * 5
 
     def test_no_wc_bonus_before_3rd_dan(self) -> None:
@@ -309,7 +319,7 @@ class TestResolvePreAttackCounterattack:
         fighter = _make_fighter(knack_rank=2, counterattack_rank=2)
         fighter.actions_remaining = [3, 5, 7]
         result = fighter.resolve_pre_attack_counterattack("Generic", 5)
-        assert result is True
+        assert result is not None
         assert fighter._counterattack_wc_bonus == 0
 
     def test_no_counter_without_interrupt(self) -> None:
@@ -317,7 +327,7 @@ class TestResolvePreAttackCounterattack:
         fighter = _make_fighter(knack_rank=1, counterattack_rank=2)
         fighter.actions_remaining = []
         result = fighter.resolve_pre_attack_counterattack("Generic", 5)
-        assert result is False
+        assert result is None
 
 
 class TestPostWoundCheck5thDan:

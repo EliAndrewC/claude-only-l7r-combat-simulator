@@ -110,6 +110,7 @@ def should_convert_light_to_serious(
     water_ring: int = 2,
     shinjo_wc_bonus_pool: int = 0,
     lw_severity_divisor: int = 1,
+    mortal_wound_threshold: int | None = None,
 ) -> bool:
     """Decide whether to convert light wounds to 1 serious wound on a passed wound check.
 
@@ -118,7 +119,8 @@ def should_convert_light_to_serious(
     calculation on a failed wound check, so passes ``2``).  The threshold is
     multiplied by this divisor so the fighter tolerates proportionally more LW.
     """
-    if serious_wounds + 1 >= 2 * earth_ring:
+    mwt = mortal_wound_threshold if mortal_wound_threshold is not None else 2 * earth_ring
+    if serious_wounds + 1 >= mwt:
         return False
 
     if light_wounds <= 10 * lw_severity_divisor:
@@ -170,7 +172,9 @@ def should_spend_void_on_combat_roll(
     return min(needed, usable)
 
 
-def format_pool_with_overflow(rolled: int, kept: int) -> str:
+def format_pool_with_overflow(
+    rolled: int, kept: int, overflow_bonus: int = 2,
+) -> str:
     """Format a dice pool string, showing overflow conversion if applicable."""
     raw = f"{rolled}k{kept}"
     if rolled <= 10:
@@ -179,7 +183,7 @@ def format_pool_with_overflow(rolled: int, kept: int) -> str:
     eff_rolled = 10
     bonus = 0
     if eff_kept > 10:
-        bonus = (eff_kept - 10) * 2
+        bonus = (eff_kept - 10) * overflow_bonus
         eff_kept = 10
     eff = f"{eff_rolled}k{eff_kept}"
     if bonus:
@@ -506,9 +510,13 @@ def shinjo_should_parry_with_two_dice(
     defender_serious_wounds: int,
     defender_earth_ring: int,
     defender_light_wounds: int,
+    mortal_wound_threshold: int | None = None,
 ) -> bool:
     """Decide whether a Shinjo with exactly 2 dice should parry or save for a second DA."""
-    mortal_threshold = 2 * defender_earth_ring
+    if mortal_wound_threshold is not None:
+        mortal_threshold = mortal_wound_threshold
+    else:
+        mortal_threshold = 2 * defender_earth_ring
     wounds_to_mortal = mortal_threshold - defender_serious_wounds
 
     if wounds_to_mortal <= 1:

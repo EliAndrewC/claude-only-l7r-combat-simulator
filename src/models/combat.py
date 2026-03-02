@@ -21,6 +21,8 @@ class ActionType(str, Enum):
     LUNGE = "lunge"
     COUNTERATTACK = "counterattack"
     FEINT = "feint"
+    STANCE = "stance"
+    FOCUS = "focus"
 
 
 class WoundTracker(BaseModel):
@@ -29,6 +31,12 @@ class WoundTracker(BaseModel):
     light_wounds: int = Field(default=0, ge=0)
     serious_wounds: int = Field(default=0, ge=0)
     earth_ring: int = Field(default=2, ge=1)
+    mortal_wound_modifier: int = Field(default=0)
+
+    @property
+    def mortal_wound_threshold(self) -> int:
+        """Mortal wound threshold: 2 * Earth Ring + modifier."""
+        return 2 * self.earth_ring + self.mortal_wound_modifier
 
     @property
     def is_crippled(self) -> bool:
@@ -37,8 +45,8 @@ class WoundTracker(BaseModel):
 
     @property
     def is_mortally_wounded(self) -> bool:
-        """Mortally wounded when serious wounds >= 2 * Earth Ring."""
-        return self.serious_wounds >= 2 * self.earth_ring
+        """Mortally wounded when serious wounds >= mortal wound threshold."""
+        return self.serious_wounds >= self.mortal_wound_threshold
 
 
 class FighterStatus(BaseModel):
@@ -56,6 +64,7 @@ class FighterStatus(BaseModel):
     dan_points: int = 0
     matsu_bonuses: list[int] = Field(default_factory=list)
     shinjo_bonuses: list[int] = Field(default_factory=list)
+    lucky_used: bool = False
 
 
 class CombatAction(BaseModel):

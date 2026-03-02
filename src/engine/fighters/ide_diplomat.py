@@ -46,9 +46,6 @@ class IdeDiplomatFighter(Fighter):
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
         tact_skill = self.char.get_skill("Tact")
         self._tact_rank = tact_skill.rank if tact_skill else 0
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
         self._sa_feint_tn_bonus = 0
         self._last_5th_dan_gain = 0
 

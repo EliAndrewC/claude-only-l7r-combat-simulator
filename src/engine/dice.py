@@ -33,17 +33,19 @@ def roll_and_keep(
     rolled: int,
     kept: int,
     explode: bool = True,
+    overflow_bonus: int = 2,
 ) -> tuple[list[int], list[int], int]:
     """Roll X dice and keep Y highest.
 
     Overflow rules (per 02-skills.md):
     - When rolled dice exceed 10, each excess becomes one extra kept die.
-    - When kept dice exceed 10, each excess adds a flat +2 bonus.
+    - When kept dice exceed 10, each excess adds a flat bonus per excess die.
 
     Args:
         rolled: Number of dice to roll.
         kept: Number of dice to keep (highest).
         explode: Whether 10s explode.
+        overflow_bonus: Flat bonus per kept die above 10 (default 2, duels use 5).
 
     Returns:
         Tuple of (all_dice, kept_dice, total).
@@ -60,7 +62,7 @@ def roll_and_keep(
 
     # Step 2: excess kept dice beyond 10 convert to flat +2 bonus each
     if effective_kept > 10:
-        bonus += (effective_kept - 10) * 2
+        bonus += (effective_kept - 10) * overflow_bonus
         effective_kept = 10
 
     effective_kept = min(effective_kept, effective_rolled)

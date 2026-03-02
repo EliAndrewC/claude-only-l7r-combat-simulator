@@ -206,6 +206,7 @@ def _resolve_monk_counterattack(
             wound_tracker.earth_ring,
             water_ring=water_value,
             lw_severity_divisor=target_ctx.wound_check_lw_severity_divisor(),
+            mortal_wound_threshold=wound_tracker.mortal_wound_threshold,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -266,9 +267,6 @@ class BrotherhoodMonkFighter(Fighter):
         self._max_per_roll = precepts_rank if self.dan >= 3 else 0
         self._counterattack_used_this_round = False
         self._in_counterattack = False
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
 
     # -- Round hooks ------------------------------------------------------------
 
@@ -385,9 +383,8 @@ class BrotherhoodMonkFighter(Fighter):
         if deficit <= 0:
             return passed, wc_total, ""
 
-        earth = wound_tracker.earth_ring
         current_sw = 1 + deficit // 10
-        would_die = (sw_before_wc + current_sw >= 2 * earth)
+        would_die = (sw_before_wc + current_sw >= wound_tracker.mortal_wound_threshold)
 
         usable = min(self._max_per_roll, self._free_raises)
         best_sw = current_sw
@@ -499,9 +496,8 @@ class BrotherhoodMonkFighter(Fighter):
             return False, ""
         projected_sw = 1 + int(wc_deficit) // 10
 
-        earth = wound_info.earth_ring
         existing_sw = wound_info.serious_wounds
-        if existing_sw + projected_sw < 2 * earth:
+        if existing_sw + projected_sw < wound_info.mortal_wound_threshold:
             return False, ""
 
         # Fire the counterattack

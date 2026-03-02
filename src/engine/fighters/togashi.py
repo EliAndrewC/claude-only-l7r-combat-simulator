@@ -21,9 +21,6 @@ class TogashiFighter(Fighter):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
         self._5th_dan_healed_this_round = False
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
 
     # -- Round hooks --------------------------------------------------------
 

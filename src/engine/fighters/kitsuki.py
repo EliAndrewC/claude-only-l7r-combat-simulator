@@ -29,9 +29,7 @@ class KitsukiFighter(Fighter):
         # 5th Dan: Debuff applied to opponent at combat start
         self._debuff_applied = False
 
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
+
 
     # -- Attack hooks -------------------------------------------------------
 
@@ -118,9 +116,8 @@ class KitsukiFighter(Fighter):
         if deficit <= 0:
             return passed, wc_total, ""
 
-        earth = wound_tracker.earth_ring
         current_sw = 1 + deficit // 10
-        would_die = (sw_before_wc + current_sw >= 2 * earth)
+        would_die = (sw_before_wc + current_sw >= wound_tracker.mortal_wound_threshold)
 
         usable = min(self._max_per_roll, self._free_raises)
         best_sw = current_sw

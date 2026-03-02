@@ -36,9 +36,6 @@ class IsawaIshiFighter(Fighter):
         self._ishi_max_void = highest_ring + self.dan
         # SA: Max void per roll = lowest ring - 1
         self._max_void_per_roll = max(0, self.char.rings.lowest() - 1)
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
 
     # -- Attack hooks -------------------------------------------------------
 

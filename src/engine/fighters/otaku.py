@@ -246,6 +246,7 @@ class OtakuFighter(Fighter):
 
     def resolve_post_attack_interrupt(
         self, attacker_name: str, phase: int,
+        attack_total: int = 0,
     ) -> None:
         """SA: After being attacked, counter-lunge using highest action die.
 

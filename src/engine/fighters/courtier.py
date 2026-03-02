@@ -41,9 +41,6 @@ class CourtierFighter(Fighter):
         self._free_raises = 2 * tact_rank if self.dan >= 3 else 0
         self._max_per_roll = tact_rank if self.dan >= 3 else 0
         self._targets_hit: set[str] = set()
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
 
     # -- Attack hooks -------------------------------------------------------
 
@@ -170,9 +167,8 @@ class CourtierFighter(Fighter):
         if deficit <= 0:
             return passed, wc_total, ""
 
-        earth = wound_tracker.earth_ring
         current_sw = 1 + deficit // 10
-        would_die = (sw_before_wc + current_sw >= 2 * earth)
+        would_die = (sw_before_wc + current_sw >= wound_tracker.mortal_wound_threshold)
 
         usable = min(self._max_per_roll, self._free_raises)
         best_sw = current_sw
@@ -275,9 +271,8 @@ class CourtierFighter(Fighter):
         projected_sw = 1 + int(wc_deficit) // 10
 
         # 5. Only parry if existing + projected SW would be mortal
-        earth = wound_info.earth_ring
         existing_sw = wound_info.serious_wounds
-        return existing_sw + projected_sw >= 2 * earth
+        return existing_sw + projected_sw >= wound_info.mortal_wound_threshold
 
     # -- Parry hooks (5th Dan) ----------------------------------------------
 

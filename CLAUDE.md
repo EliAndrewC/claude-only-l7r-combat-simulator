@@ -34,7 +34,7 @@ This will eventually involve:
 - Run Tests: `pytest`
 - Run Coverage: `pytest --cov=src`
 - Start UI: `PYTHONPATH=. streamlit run src/app.py`
-- Lint: `ruff check .`
+- Lint: `python3 -m ruff check .`
 
 ## Project Rules
 - **TDD First**: Always write a failing test in `tests/` before writing the code

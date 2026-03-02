@@ -51,9 +51,6 @@ class IkomaBardFighter(Fighter):
         self._max_per_roll = bragging_rank if self.dan >= 3 else 0
         self._sa_uses_this_round = 0
         self._max_sa_per_round = 2 if self.dan >= 5 else 1
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
 
     # -- Round hooks ------------------------------------------------------------
 
@@ -162,9 +159,8 @@ class IkomaBardFighter(Fighter):
             return ""
         projected_sw = 1 + int(wc_deficit) // 10
 
-        earth = wound_info.earth_ring
         existing_sw = wound_info.serious_wounds
-        if existing_sw + projected_sw < 2 * earth:
+        if existing_sw + projected_sw < wound_info.mortal_wound_threshold:
             return ""
 
         # Fire the defensive SA
@@ -239,9 +235,8 @@ class IkomaBardFighter(Fighter):
         if deficit <= 0:
             return passed, wc_total, ""
 
-        earth = wound_tracker.earth_ring
         current_sw = 1 + deficit // 10
-        would_die = (sw_before_wc + current_sw >= 2 * earth)
+        would_die = (sw_before_wc + current_sw >= wound_tracker.mortal_wound_threshold)
 
         usable = min(self._max_per_roll, self._free_raises)
         best_sw = current_sw
@@ -335,6 +330,5 @@ class IkomaBardFighter(Fighter):
             return False
         projected_sw = 1 + int(wc_deficit) // 10
 
-        earth = wound_info.earth_ring
         existing_sw = wound_info.serious_wounds
-        return existing_sw + projected_sw >= 2 * earth
+        return existing_sw + projected_sw >= wound_info.mortal_wound_threshold

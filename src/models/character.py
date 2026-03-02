@@ -5,7 +5,14 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class Advantage(str, Enum):
+    GREAT_DESTINY = "Great Destiny"
+    PERMANENT_WOUND = "Permanent Wound"
+    STRENGTH_OF_THE_EARTH = "Strength of the Earth"
+    LUCKY = "Lucky"
 
 
 class RingName(str, Enum):
@@ -77,6 +84,16 @@ class Character(BaseModel):
     void_points: int = Field(default=0, ge=0)
     profession_abilities: list[ProfessionAbility] = Field(default_factory=list)
     school_knacks: list[str] = Field(default_factory=list)
+    advantages: list[Advantage] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_advantages(self) -> Character:
+        has_gd = Advantage.GREAT_DESTINY in self.advantages
+        has_pw = Advantage.PERMANENT_WOUND in self.advantages
+        if has_gd and has_pw:
+            msg = "Great Destiny and Permanent Wound are mutually exclusive"
+            raise ValueError(msg)
+        return self
 
     @property
     def dan(self) -> int:

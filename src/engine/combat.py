@@ -158,6 +158,7 @@ def make_wound_check(
     tn_bonus: int = 0,
     extra_kept: int = 0,
     effective_lw_for_serious: int | None = None,
+    explode: bool = True,
 ) -> tuple[bool, int, list[int], list[int]]:
     """Make a wound check against the current light wound total.
 
@@ -176,6 +177,8 @@ def make_wound_check(
         effective_lw_for_serious: Override light wounds used for serious wound
             calculation on failure (e.g. Bayushi 5th Dan uses half LW).
             None = use actual light wounds.
+        explode: Whether 10s explode on the wound check roll (default True).
+            Set to False for iaijutsu duel wound checks.
 
     Returns:
         Tuple of (passed, roll_total, all_dice, kept_dice).
@@ -190,7 +193,7 @@ def make_wound_check(
     base_tn = wound_tracker.light_wounds
     effective_tn = base_tn + tn_bonus
 
-    all_dice, kept_dice, total = roll_and_keep(rolled, kept, explode=True)
+    all_dice, kept_dice, total = roll_and_keep(rolled, kept, explode=explode)
     passed = total >= effective_tn
 
     if not passed:
@@ -207,18 +210,26 @@ def make_wound_check(
     return passed, total, all_dice, kept_dice
 
 
-def create_combat_log(combatant_names: list[str], earth_values: list[int]) -> CombatLog:
+def create_combat_log(
+    combatant_names: list[str],
+    earth_values: list[int],
+    mortal_wound_modifiers: list[int] | None = None,
+) -> CombatLog:
     """Initialize a combat log for an encounter.
 
     Args:
         combatant_names: Names of all combatants.
         earth_values: Earth ring values for wound tracking.
+        mortal_wound_modifiers: Per-combatant mortal wound modifiers
+            (e.g. +1 for Great Destiny, -1 for Permanent Wound).
+            Defaults to 0 for each combatant.
 
     Returns:
         A fresh CombatLog ready for combat.
     """
+    modifiers = mortal_wound_modifiers or [0] * len(combatant_names)
     wounds = {
-        name: WoundTracker(earth_ring=earth)
-        for name, earth in zip(combatant_names, earth_values)
+        name: WoundTracker(earth_ring=earth, mortal_wound_modifier=mod)
+        for name, earth, mod in zip(combatant_names, earth_values, modifiers)
     }
     return CombatLog(combatants=combatant_names, wounds=wounds)

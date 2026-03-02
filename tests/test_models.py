@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.models.character import Character, Ring, RingName, Rings, Skill
+from src.models.character import Advantage, Character, Ring, RingName, Rings, Skill
 from src.models.combat import ActionType, CombatAction, CombatLog, FighterStatus, WoundTracker
 from src.models.school import Knack, School, Technique
 
@@ -66,6 +66,30 @@ class TestCharacter:
         assert c.void_points_max == 2
 
 
+class TestAdvantages:
+    def test_default_advantages_empty(self) -> None:
+        c = Character(name="Test")
+        assert c.advantages == []
+
+    def test_can_set_great_destiny(self) -> None:
+        c = Character(name="Test", advantages=[Advantage.GREAT_DESTINY])
+        assert Advantage.GREAT_DESTINY in c.advantages
+
+    def test_great_destiny_and_permanent_wound_conflict(self) -> None:
+        with pytest.raises(ValidationError):
+            Character(
+                name="Test",
+                advantages=[Advantage.GREAT_DESTINY, Advantage.PERMANENT_WOUND],
+            )
+
+    def test_multiple_non_conflicting_advantages(self) -> None:
+        c = Character(
+            name="Test",
+            advantages=[Advantage.GREAT_DESTINY, Advantage.STRENGTH_OF_THE_EARTH, Advantage.LUCKY],
+        )
+        assert len(c.advantages) == 3
+
+
 class TestWoundTracker:
     def test_not_crippled_by_default(self) -> None:
         wt = WoundTracker()
@@ -84,6 +108,29 @@ class TestWoundTracker:
         wt = WoundTracker(serious_wounds=3, earth_ring=3)
         assert wt.is_crippled
         assert not wt.is_mortally_wounded
+
+
+class TestMortalWoundThreshold:
+    def test_default_modifier_zero(self) -> None:
+        wt = WoundTracker(earth_ring=3)
+        assert wt.mortal_wound_modifier == 0
+        assert wt.mortal_wound_threshold == 6  # 2 * 3
+
+    def test_great_destiny_modifier(self) -> None:
+        wt = WoundTracker(earth_ring=3, mortal_wound_modifier=1)
+        assert wt.mortal_wound_threshold == 7  # 2 * 3 + 1
+        wt.serious_wounds = 6
+        assert not wt.is_mortally_wounded
+        wt.serious_wounds = 7
+        assert wt.is_mortally_wounded
+
+    def test_permanent_wound_modifier(self) -> None:
+        wt = WoundTracker(earth_ring=3, mortal_wound_modifier=-1)
+        assert wt.mortal_wound_threshold == 5  # 2 * 3 - 1
+        wt.serious_wounds = 4
+        assert not wt.is_mortally_wounded
+        wt.serious_wounds = 5
+        assert wt.is_mortally_wounded
 
 
 class TestCombatLog:
@@ -110,6 +157,7 @@ class TestFighterStatus:
         assert fs.actions_remaining == []
         assert fs.void_points == 0
         assert fs.void_points_max == 0
+        assert fs.lucky_used is False
 
     def test_custom_values(self) -> None:
         fs = FighterStatus(
@@ -124,6 +172,10 @@ class TestFighterStatus:
         assert fs.is_crippled is True
         assert fs.actions_remaining == [3, 7]
         assert fs.void_points_max == 3
+
+    def test_lucky_used_field(self) -> None:
+        fs = FighterStatus(lucky_used=True)
+        assert fs.lucky_used is True
 
 
 class TestCombatActionDicePool:

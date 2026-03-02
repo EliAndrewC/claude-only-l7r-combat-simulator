@@ -25,9 +25,6 @@ class PriestFighter(Fighter):
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
-        worldliness_skill = self.char.get_skill("Worldliness")
-        worldliness_rank = worldliness_skill.rank if worldliness_skill else 0
-        self.worldliness_void = worldliness_rank
 
         # 3rd Dan: dice swap pool
         precepts = self.char.get_skill("Precepts")
@@ -270,7 +267,7 @@ class PriestFighter(Fighter):
         wounds = self.state.log.wounds[self.name]
         current_sw = wounds.serious_wounds
         pending_sw = 1 + (tn - new_total) // 10
-        mortal_threshold = 2 * wounds.earth_ring
+        mortal_threshold = wounds.mortal_wound_threshold
         would_be_mortal = (current_sw + pending_sw) >= mortal_threshold
 
         if pending_sw < 2 and not would_be_mortal:

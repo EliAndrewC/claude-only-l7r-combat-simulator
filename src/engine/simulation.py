@@ -45,7 +45,7 @@ from src.engine.simulation_utils import (
 from src.engine.simulation_utils import (
     void_spent_label as _void_spent_label,
 )
-from src.models.character import Character, RingName
+from src.models.character import Advantage, Character, RingName
 from src.models.combat import ActionType, CombatAction, CombatLog
 from src.models.weapon import Weapon
 
@@ -59,12 +59,469 @@ __all__ = [
 
 
 
+def _resolve_stance_discernment(
+    roller: Character, opponent: Character, state: CombatState, log: CombatLog,
+) -> None:
+    """Resolve the stance discernment phase for one fighter.
+
+    Each fighter rolls (Air + Iaijutsu_rank)k(Air) with exploding 10s.
+    - Fire ring: floor(roll / 5) vs actual Fire — exact if >=, lower bound otherwise
+    - Starting TN (xp_total // 10): direct comparison — learn actual TN or upper bound
+    """
+    air = roller.rings.air.value
+    iai = roller.get_skill("Iaijutsu")
+    rolled, kept = air + (iai.rank if iai else 0), air
+    all_dice, kept_dice, total = roll_and_keep(rolled, kept, explode=True)
+
+    # Fire discernment: floor(total/5) vs actual Fire
+    opp_fire = opponent.rings.fire.value
+    fire_floor = total // 5
+    fire_str = f"Fire {opp_fire}" if fire_floor >= opp_fire else f"Fire ~{fire_floor}"
+
+    # TN discernment: compare total directly to TN
+    opp_tn = opponent.xp_total // 10
+    tn_str = f"TN >= {opp_tn}" if total >= opp_tn else f"TN >= {total}"
+
+    pool_str = _format_pool_with_overflow(rolled, kept)
+    action = CombatAction(
+        phase=0, actor=roller.name, action_type=ActionType.STANCE,
+        target=opponent.name,
+        dice_rolled=all_dice, dice_kept=kept_dice, total=total,
+        description=f"{roller.name} stance: {pool_str} — discerns {fire_str}, {tn_str}",
+        dice_pool=pool_str, label="Stance",
+        tn_description=f"— discerns {fire_str}, {tn_str}",
+    )
+    action.status_after = state.snapshot_status()
+    log.add_action(action)
+
+
+def _mortal_wound_modifier(char: Character) -> int:
+    """Compute the mortal wound modifier from a character's advantages."""
+    if Advantage.GREAT_DESTINY in char.advantages:
+        return 1
+    if Advantage.PERMANENT_WOUND in char.advantages:
+        return -1
+    return 0
+
+
+def _resolve_iaijutsu_duel(
+    char_a: Character,
+    char_b: Character,
+    weapon_a: Weapon,
+    weapon_b: Weapon,
+    state: CombatState,
+    log: CombatLog,
+    fighter_map: dict[str, "Fighter"],
+    max_duel_rounds: int = 10,
+) -> None:
+    """Resolve an iaijutsu duel between two characters.
+
+    Per 03-combat.md rules:
+    1. Contested iaijutsu roll (no exploding 10s)
+    2. Winner picks focus/strike first, alternate
+    3. Simultaneous strikes with special damage rules
+    4. Both miss → restart. At least one hit → done.
+    """
+    f_a = fighter_map[char_a.name]
+    f_b = fighter_map[char_b.name]
+
+    for _duel_round in range(max_duel_rounds):
+        # --- Contested Roll ---
+        fire_a = char_a.rings.fire.value
+        fire_b = char_b.rings.fire.value
+
+        iai_a = char_a.get_skill("Iaijutsu")
+        iai_a_rank = iai_a.rank if iai_a else 0
+        iai_b = char_b.get_skill("Iaijutsu")
+        iai_b_rank = iai_b.rank if iai_b else 0
+
+        # Extra rolled dice from school techniques
+        extra_a = f_a.duel_iaijutsu_extra_rolled()
+        extra_b = f_b.duel_iaijutsu_extra_rolled()
+
+        rolled_a = iai_a_rank + fire_a + extra_a
+        kept_a = fire_a
+        rolled_b = iai_b_rank + fire_b + extra_b
+        kept_b = fire_b
+
+        # No exploding 10s on contested rolls
+        all_a, kept_dice_a, total_a = roll_and_keep(rolled_a, kept_a, explode=False)
+        all_b, kept_dice_b, total_b = roll_and_keep(rolled_b, kept_b, explode=False)
+
+        # Flat bonuses from school techniques
+        bonus_a, note_a = f_a.duel_iaijutsu_flat_bonus()
+        bonus_b, note_b = f_b.duel_iaijutsu_flat_bonus()
+        total_a += bonus_a
+        total_b += bonus_b
+
+        # Determine winner and free raise
+        tied = total_a == total_b
+        if tied:
+            f_a.duel_contested_bonus = 5
+            f_b.duel_contested_bonus = 5
+            # Winner picks first: use A as arbitrary first picker on tie
+            winner_first = f_a
+            loser_second = f_b
+        elif total_a > total_b:
+            f_a.duel_contested_bonus = 5
+            f_b.duel_contested_bonus = 0
+            winner_first = f_a
+            loser_second = f_b
+        else:
+            f_a.duel_contested_bonus = 0
+            f_b.duel_contested_bonus = 5
+            winner_first = f_b
+            loser_second = f_a
+
+        pool_a = _format_pool_with_overflow(rolled_a, kept_a)
+        pool_b = _format_pool_with_overflow(rolled_b, kept_b)
+
+        # Build per-fighter annotation notes for contested roll.
+        # note_a/note_b are school bonus strings like " (2nd Dan +5)";
+        # strip outer parens/spaces so we can merge cleanly.
+        clean_a = note_a.strip(" ()")
+        clean_b = note_b.strip(" ()")
+        tie_str = "tied — both get free raise"
+
+        def _contested_note(*, tie: bool, school: str) -> str:
+            parts: list[str] = []
+            if tie:
+                parts.append(tie_str)
+            if school:
+                parts.append(school)
+            return f" ({', '.join(parts)})" if parts else ""
+
+        result_note_a = _contested_note(tie=tied, school=clean_a)
+        result_note_b = _contested_note(tie=tied, school=clean_b)
+
+        # success=True means "chooses first", False means "chooses second"
+        success_a = total_a >= total_b
+        success_b = not success_a
+
+        # Log contested actions — success drives "chooses first/second"
+        contest_a = CombatAction(
+            phase=0,
+            actor=char_a.name,
+            action_type=ActionType.IAIJUTSU,
+            target=char_b.name,
+            dice_rolled=all_a,
+            dice_kept=kept_dice_a,
+            total=total_a,
+            tn=total_b,
+            success=success_a,
+            description=(
+                f"{char_a.name} contested iaijutsu: {pool_a}"
+                f" = {total_a}{result_note_a}"
+            ),
+            dice_pool=pool_a,
+            label="contested iaijutsu",
+        )
+        contest_a.status_after = state.snapshot_status()
+        log.add_action(contest_a)
+
+        contest_b = CombatAction(
+            phase=0,
+            actor=char_b.name,
+            action_type=ActionType.IAIJUTSU,
+            target=char_a.name,
+            dice_rolled=all_b,
+            dice_kept=kept_dice_b,
+            total=total_b,
+            tn=total_a,
+            success=success_b,
+            description=(
+                f"{char_b.name} contested iaijutsu: {pool_b}"
+                f" = {total_b}{result_note_b}"
+            ),
+            dice_pool=pool_b,
+            label="contested iaijutsu",
+        )
+        contest_b.status_after = state.snapshot_status()
+        log.add_action(contest_b)
+
+        # --- Starting TNs ---
+        tn_a = char_a.xp_total // 10
+        tn_b = char_b.xp_total // 10
+        focus_a = 0
+        focus_b = 0
+
+        # --- Focus/Strike Alternation ---
+        # Winner picks first. Alternate until someone strikes.
+        turn_order = [winner_first, loser_second]
+        turn_idx = 0
+
+        # Flat bonuses for estimating expected rolls
+        flat_a = bonus_a  # already computed above (e.g. Kakita 2nd Dan +5)
+        flat_b = bonus_b
+
+        while True:
+            current = turn_order[turn_idx % 2]
+
+            if current is f_a:
+                my_focus, opp_focus = focus_a, focus_b
+                my_tn, opp_tn = tn_a, tn_b
+                my_rolled, my_kept = rolled_a, kept_a
+                opp_rolled, opp_kept = rolled_b, kept_b
+                my_flat, opp_flat = flat_a, flat_b
+            else:
+                my_focus, opp_focus = focus_b, focus_a
+                my_tn, opp_tn = tn_b, tn_a
+                my_rolled, my_kept = rolled_b, kept_b
+                opp_rolled, opp_kept = rolled_a, kept_a
+                my_flat, opp_flat = flat_b, flat_a
+
+            if current.should_duel_focus(
+                my_focus, opp_focus,
+                my_tn=my_tn, opp_tn=opp_tn,
+                my_rolled=my_rolled, my_kept=my_kept,
+                opp_rolled=opp_rolled, opp_kept=opp_kept,
+                my_flat_bonus=my_flat, opp_flat_bonus=opp_flat,
+            ):
+                # Focus: raise own TN by 5
+                if current is f_a:
+                    focus_a += 1
+                    tn_a += 5
+                else:
+                    focus_b += 1
+                    tn_b += 5
+
+                focus_action = CombatAction(
+                    phase=0,
+                    actor=current.name,
+                    action_type=ActionType.FOCUS,
+                    description=(
+                        f"{current.name} focuses"
+                        f" — TNs: {f_a.name} {tn_a},"
+                        f" {f_b.name} {tn_b}"
+                    ),
+                    label="focus",
+                )
+                focus_action.status_after = state.snapshot_status()
+                log.add_action(focus_action)
+                turn_idx += 1
+            else:
+                # Strike: log the decision, then both attack simultaneously
+                strike_decision = CombatAction(
+                    phase=0,
+                    actor=current.name,
+                    action_type=ActionType.FOCUS,
+                    description=(
+                        f"{current.name} strikes"
+                        f" — TNs: {f_a.name} {tn_a},"
+                        f" {f_b.name} {tn_b}"
+                    ),
+                    label="strike",
+                )
+                strike_decision.status_after = state.snapshot_status()
+                log.add_action(strike_decision)
+                break
+
+        # --- Simultaneous Strikes ---
+        # Each rolls (Iaijutsu + Fire + extra)k(Fire), explode=False
+        strike_all_a, strike_kept_a, strike_total_a = roll_and_keep(
+            rolled_a, kept_a, explode=False,
+        )
+        strike_flat_a, strike_note_a = f_a.duel_iaijutsu_flat_bonus()
+        strike_total_a += strike_flat_a
+
+        strike_all_b, strike_kept_b, strike_total_b = roll_and_keep(
+            rolled_b, kept_b, explode=False,
+        )
+        strike_flat_b, strike_note_b = f_b.duel_iaijutsu_flat_bonus()
+        strike_total_b += strike_flat_b
+
+        hit_a = strike_total_a >= tn_b  # A hits B (vs B's TN)
+        hit_b = strike_total_b >= tn_a  # B hits A (vs A's TN)
+
+        # Log strike actions
+        strike_action_a = CombatAction(
+            phase=0,
+            actor=char_a.name,
+            action_type=ActionType.IAIJUTSU,
+            target=char_b.name,
+            dice_rolled=strike_all_a,
+            dice_kept=strike_kept_a,
+            total=strike_total_a,
+            tn=tn_b,
+            success=hit_a,
+            description=(
+                f"{char_a.name} duel strike: {pool_a}"
+                f" = {strike_total_a}{strike_note_a}"
+                f" vs TN {tn_b}"
+            ),
+            dice_pool=pool_a,
+            label="duel strike",
+        )
+        strike_action_a.status_after = state.snapshot_status()
+        log.add_action(strike_action_a)
+
+        strike_action_b = CombatAction(
+            phase=0,
+            actor=char_b.name,
+            action_type=ActionType.IAIJUTSU,
+            target=char_a.name,
+            dice_rolled=strike_all_b,
+            dice_kept=strike_kept_b,
+            total=strike_total_b,
+            tn=tn_a,
+            success=hit_b,
+            description=(
+                f"{char_b.name} duel strike: {pool_b}"
+                f" = {strike_total_b}{strike_note_b}"
+                f" vs TN {tn_a}"
+            ),
+            dice_pool=pool_b,
+            label="duel strike",
+        )
+        strike_action_b.status_after = state.snapshot_status()
+        log.add_action(strike_action_b)
+
+        # --- Damage (for each that hit) ---
+        for attacker, atk_char, atk_weapon, defender_char, strike_total, opp_tn, hit in [
+            (f_a, char_a, weapon_a, char_b, strike_total_a, tn_b, hit_a),
+            (f_b, char_b, weapon_b, char_a, strike_total_b, tn_a, hit_b),
+        ]:
+            if not hit:
+                continue
+
+            # Extra damage dice: +1 per 1 exceeded (not per 5!)
+            exceed = max(0, strike_total - opp_tn)
+            extra_dice = exceed
+
+            atk_fire = atk_char.rings.fire.value
+            dmg_rolled = atk_weapon.rolled + atk_fire + extra_dice
+            dmg_kept = atk_weapon.kept
+
+            # Damage DOES explode, overflow_bonus=5
+            dmg_all, dmg_kept_dice, dmg_total = roll_and_keep(
+                dmg_rolled, dmg_kept, explode=True, overflow_bonus=5,
+            )
+
+            # Flat damage bonuses
+            dmg_notes: list[str] = []
+
+            # School-specific damage bonus
+            school_dmg, school_dmg_note = attacker.duel_damage_flat_bonus()
+            if school_dmg > 0:
+                dmg_total += school_dmg
+                dmg_notes.append(school_dmg_note.strip())
+
+            # Contested winner free raise on damage (+5)
+            if attacker.duel_contested_bonus > 0:
+                dmg_total += attacker.duel_contested_bonus
+                if attacker.duel_contested_bonus == 5:
+                    bonus_reason = "tied contested" if tied else "won contested"
+                    dmg_notes.append(f"+5 free raise ({bonus_reason})")
+
+            defender_name = defender_char.name
+            dmg_pool = _format_pool_with_overflow(
+                dmg_rolled, dmg_kept, overflow_bonus=5,
+            )
+            dmg_note_str = f" ({', '.join(dmg_notes)})" if dmg_notes else ""
+
+            damage_action = CombatAction(
+                phase=0,
+                actor=atk_char.name,
+                action_type=ActionType.DAMAGE,
+                target=defender_name,
+                dice_rolled=dmg_all,
+                dice_kept=dmg_kept_dice,
+                total=dmg_total,
+                description=(
+                    f"{atk_char.name} duel damage: {dmg_pool}"
+                    f" = {dmg_total}{dmg_note_str}"
+                ),
+                dice_pool=dmg_pool,
+                label="duel damage",
+            )
+
+            # Apply damage as light wounds
+            wound_tracker = log.wounds[defender_name]
+            wound_tracker.light_wounds += dmg_total
+
+            damage_action.status_after = state.snapshot_status()
+            log.add_action(damage_action)
+
+            # --- Wound check (no explode, no void) ---
+            water_val = defender_char.rings.water.value
+            sw_before = wound_tracker.serious_wounds
+            defender_f = fighter_map[defender_name]
+
+            # Fighter hooks for extra dice and flat bonuses
+            wc_extra_rolled = defender_f.wound_check_extra_rolled()
+            wc_extra_kept = defender_f.wound_check_extra_kept()
+
+            passed, wc_total, wc_all, wc_kept = make_wound_check(
+                wound_tracker, water_val,
+                void_spend=0,
+                extra_rolled=wc_extra_rolled,
+                extra_kept=wc_extra_kept,
+                explode=False,
+            )
+
+            # Flat bonuses (e.g. Isawa Duelist 2nd Dan +5)
+            wc_flat_bonus, wc_flat_note = defender_f.wound_check_flat_bonus()
+            if wc_flat_bonus > 0:
+                wc_total += wc_flat_bonus
+                passed = wc_total >= wound_tracker.light_wounds
+
+            # Advantage flat bonus (Strength of the Earth = +5)
+            adv_bonus, adv_note = defender_f.advantage_wound_check_flat_bonus()
+            if adv_bonus > 0:
+                wc_total += adv_bonus
+                passed = wc_total >= wound_tracker.light_wounds
+                wc_flat_note += adv_note
+
+            wc_rolled = water_val + 1 + wc_extra_rolled
+            wc_kept_count = water_val + wc_extra_kept
+            bonus_notes = "no explode, no void"
+            if wc_flat_note:
+                bonus_notes += f";{wc_flat_note}"
+            wc_action = CombatAction(
+                phase=0,
+                actor=defender_name,
+                action_type=ActionType.WOUND_CHECK,
+                dice_rolled=wc_all,
+                dice_kept=wc_kept,
+                total=wc_total,
+                tn=wound_tracker.light_wounds,
+                success=passed,
+                description=(
+                    f"{defender_name} duel wound check:"
+                    f" {'passed' if passed else 'failed'}"
+                    f" (rolled {wc_total}, {bonus_notes})"
+                ),
+                dice_pool=_format_pool_with_overflow(
+                    wc_rolled, wc_kept_count,
+                ),
+                label="duel wound check",
+            )
+
+            if not passed:
+                wound_tracker.light_wounds = 0
+                wc_serious = wound_tracker.serious_wounds - sw_before
+                wc_action.serious_wounds_taken = wc_serious
+
+            wc_action.status_after = state.snapshot_status()
+            log.add_action(wc_action)
+
+        # --- Resolution ---
+        if not hit_a and not hit_b:
+            # Both miss → resheathe and restart
+            # (contested bonus is re-set by the next contested roll)
+            continue
+
+        # At least one hit → duel phase is over
+        break
+
+
 def simulate_combat(
     char_a: Character,
     char_b: Character,
     weapon_a: Weapon,
     weapon_b: Weapon,
     max_rounds: int = 20,
+    is_duel: bool = False,
 ) -> CombatLog:
     """Run a full combat between two characters.
 
@@ -74,6 +531,7 @@ def simulate_combat(
         weapon_a: First combatant's weapon.
         weapon_b: Second combatant's weapon.
         max_rounds: Maximum number of rounds before declaring a draw.
+        is_duel: If True, begin with an iaijutsu duel before normal combat.
 
     Returns:
         A CombatLog with all actions, wounds, and winner (or None for draw).
@@ -81,6 +539,10 @@ def simulate_combat(
     log = create_combat_log(
         [char_a.name, char_b.name],
         [char_a.rings.earth.value, char_b.rings.earth.value],
+        mortal_wound_modifiers=[
+            _mortal_wound_modifier(char_a),
+            _mortal_wound_modifier(char_b),
+        ],
     )
 
     # Build CombatState and create Fighter instances directly
@@ -97,6 +559,41 @@ def simulate_combat(
             void_points=char_b.void_points_max,
         ),
     }
+
+    # Iaijutsu duel phase (optional)
+    if is_duel:
+        # Stance discernment phase (before duel begins)
+        _resolve_stance_discernment(char_a, char_b, state, log)
+        _resolve_stance_discernment(char_b, char_a, state, log)
+
+        fighter_map[char_a.name].in_duel = True
+        fighter_map[char_b.name].in_duel = True
+        _resolve_iaijutsu_duel(
+            char_a, char_b, weapon_a, weapon_b,
+            state, log, fighter_map,
+        )
+        fighter_map[char_a.name].in_duel = False
+        fighter_map[char_b.name].in_duel = False
+        # If mortal wound during duel, skip combat
+        if state.is_mortally_wounded(char_a.name):
+            log.winner = char_b.name
+            return log
+        if state.is_mortally_wounded(char_b.name):
+            log.winner = char_a.name
+            return log
+
+    # 5th Dan combat-start debuffs (e.g. Kitsuki ring reduction)
+    for name_a, name_b in [
+        (char_a.name, char_b.name),
+        (char_b.name, char_a.name),
+    ]:
+        debuff_note = fighter_map[name_a].apply_5th_dan_debuff(name_b)
+        if debuff_note:
+            log.add_action(CombatAction(
+                phase=0, actor=name_a,
+                action_type=ActionType.STANCE,
+                description=f"{name_a}{debuff_note}",
+            ))
 
     # Thin dict view for _tiebreak_key only
     fighters = {
@@ -746,15 +1243,41 @@ def _resolve_attack(
     # Attack missed — dice already consumed by pre-declaration (if any),
     # reflected in attack_action.status_after snapshot.
     if not attack_action.success:
-        # SA counter-lunge fires even on a miss
-        if (
-            not log.wounds[attacker_name].is_mortally_wounded
-            and not log.wounds[defender_name].is_mortally_wounded
+        # Lucky reroll on near-miss attacks
+        if attacker_fighter.should_use_lucky_reroll_attack(
+            attack_action.total, tn,
         ):
-            defender_fighter.resolve_post_attack_interrupt(
-                attacker_name, phase,
+            lucky_rolled = len(attack_action.dice_rolled)
+            lucky_kept = len(attack_action.dice_kept)
+            reroll_all, reroll_kept, reroll_total = roll_and_keep(
+                lucky_rolled, lucky_kept, explode=attack_explode,
             )
-        return
+            attacker_fighter.lucky_used = True
+            if reroll_total >= tn:
+                attack_action.dice_rolled = reroll_all
+                attack_action.dice_kept = reroll_kept
+                attack_action.total = reroll_total
+                attack_action.success = True
+                attack_action.description += (
+                    f" (Lucky reroll: {reroll_total} vs TN {tn} — hit!)"
+                )
+                attack_action.status_after = state.snapshot_status()
+            else:
+                attack_action.description += (
+                    f" (Lucky reroll: {reroll_total} vs TN {tn}"
+                    f" — still missed)"
+                )
+
+        if not attack_action.success:
+            # SA counter-lunge fires even on a miss
+            if (
+                not log.wounds[attacker_name].is_mortally_wounded
+                and not log.wounds[defender_name].is_mortally_wounded
+            ):
+                defender_fighter.resolve_post_attack_interrupt(
+                    attacker_name, phase, attack_action.total,
+                )
+            return
 
     # Annotate attack hit with expected damage pool (assuming no parry)
     # Feints skip this — they don't deal normal damage
@@ -921,7 +1444,7 @@ def _resolve_attack(
                 and not log.wounds[defender_name].is_mortally_wounded
             ):
                 defender_fighter.resolve_post_attack_interrupt(
-                    attacker_name, phase,
+                    attacker_name, phase, attack_action.total,
                 )
             return
 
@@ -1095,7 +1618,7 @@ def _resolve_attack(
                 and not log.wounds[defender_name].is_mortally_wounded
             ):
                 defender_fighter.resolve_post_attack_interrupt(
-                    attacker_name, phase,
+                    attacker_name, phase, attack_action.total,
                 )
             return
 
@@ -1393,7 +1916,9 @@ def _resolve_attack(
             not log.wounds[attacker_name].is_mortally_wounded
             and not log.wounds[defender_name].is_mortally_wounded
         ):
-            defender_fighter.resolve_post_attack_interrupt(attacker_name, phase)
+            defender_fighter.resolve_post_attack_interrupt(
+                attacker_name, phase, attack_action.total,
+            )
         return
 
     # --- Wound check ---
@@ -1463,6 +1988,14 @@ def _resolve_attack(
         effective_tn = wound_tracker.light_wounds + ab10_bonus
         passed = wc_total >= effective_tn
 
+    # Advantage flat bonus (Strength of the Earth = +5)
+    adv_bonus, adv_note = defender_fighter.advantage_wound_check_flat_bonus()
+    if adv_bonus > 0:
+        wc_total += adv_bonus
+        effective_tn = wound_tracker.light_wounds + ab10_bonus
+        passed = wc_total >= effective_tn
+        wc_flat_note += adv_note
+
     # Ability 5: Free crippled reroll on wound check
     if not passed and log.wounds[defender_name].is_crippled:
         wc_all_dice, wc_kept_dice, wc_total, _ = defender_fighter.crippled_reroll(
@@ -1497,6 +2030,51 @@ def _resolve_attack(
             passed = wc_total >= effective_tn
             wc_bonus_note += wc_pen_note
 
+    # Lucky advantage: reroll a failed wound check that inflicted 2+ SW
+    lucky_note = ""
+    if not passed:
+        sw_taken = wound_tracker.serious_wounds - sw_before_wc
+        if defender_fighter.should_use_lucky_reroll(sw_taken):
+            # Revert serious wounds from the failed check
+            wound_tracker.serious_wounds = sw_before_wc
+
+            # Make the reroll
+            reroll_passed, reroll_total, reroll_all, reroll_kept = (
+                make_wound_check(
+                    wound_tracker, water_value, void_spend=void_spend,
+                    extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
+                    extra_kept=wc_extra_kept,
+                    effective_lw_for_serious=eff_lw_override,
+                )
+            )
+            reroll_sw = wound_tracker.serious_wounds - sw_before_wc
+
+            if reroll_passed:
+                # Reroll passed — keep reroll result
+                passed = True
+                wc_total = reroll_total
+                wc_all_dice = reroll_all
+                wc_kept_dice = reroll_kept
+                lucky_note = " (Lucky reroll: passed)"
+            elif reroll_sw < sw_taken:
+                # Reroll failed but fewer SW — keep reroll
+                lucky_note = (
+                    f" (Lucky reroll: {reroll_sw} SW"
+                    f" instead of {sw_taken})"
+                )
+                wc_total = reroll_total
+                wc_all_dice = reroll_all
+                wc_kept_dice = reroll_kept
+            else:
+                # Reroll is same or worse — revert to original
+                wound_tracker.serious_wounds = sw_before_wc + sw_taken
+                lucky_note = (
+                    f" (Lucky reroll: kept original"
+                    f" {sw_taken} SW)"
+                )
+
+            defender_fighter.lucky_used = True
+
     void_note = f" ({wc_void_label})" if wc_void_label else ""
 
     # Record the TN before any conversion modifies light_wounds
@@ -1513,6 +2091,7 @@ def _resolve_attack(
             water_ring=water_value,
             shinjo_wc_bonus_pool=defender_fighter.wc_bonus_pool_total(),
             lw_severity_divisor=defender_fighter.wound_check_lw_severity_divisor(),
+            mortal_wound_threshold=wound_tracker.mortal_wound_threshold,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -1558,7 +2137,7 @@ def _resolve_attack(
         description=(
             f"{defender_name} wound check: {'passed' if passed else 'failed'} "
             f"(rolled {wc_total}){void_note}{void_spent_note}{wc_prm_note}"
-            f"{wc_flat_note}{wc_bonus_note}"
+            f"{wc_flat_note}{wc_bonus_note}{lucky_note}"
             f"{ab10_note}{convert_note}{da_auto_sw_note}{eff_lw_note}"
         ),
         dice_pool=f"{wc_rolled}k{wc_kept}",
@@ -1627,6 +2206,8 @@ def _resolve_attack(
         not log.wounds[attacker_name].is_mortally_wounded
         and not log.wounds[defender_name].is_mortally_wounded
     ):
-        defender_fighter.resolve_post_attack_interrupt(attacker_name, phase)
+        defender_fighter.resolve_post_attack_interrupt(
+            attacker_name, phase, attack_action.total,
+        )
 
 

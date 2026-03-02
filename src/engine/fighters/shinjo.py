@@ -244,7 +244,7 @@ class ShinjoFighter(Fighter):
             wound_info = self.state.log.wounds[self.name]
             near_mortal = (
                 wound_info.serious_wounds
-                >= 2 * wound_info.earth_ring - 1
+                >= wound_info.mortal_wound_threshold - 1
             )
             if not near_mortal:
                 return False
@@ -286,7 +286,7 @@ class ShinjoFighter(Fighter):
         wound_info = self.state.log.wounds[self.name]
         near_mortal = (
             wound_info.serious_wounds
-            >= 2 * wound_info.earth_ring - 1
+            >= wound_info.mortal_wound_threshold - 1
         )
         dice_count = len(self.actions_remaining)
 
@@ -304,6 +304,7 @@ class ShinjoFighter(Fighter):
                 defender_serious_wounds=wound_info.serious_wounds,
                 defender_earth_ring=wound_info.earth_ring,
                 defender_light_wounds=wound_info.light_wounds,
+                mortal_wound_threshold=wound_info.mortal_wound_threshold,
             )
         # 1 die: only if near mortal
         return near_mortal

@@ -76,6 +76,7 @@ def _group_action_sequences(
             ActionType.ATTACK, ActionType.DOUBLE_ATTACK,
             ActionType.LUNGE, ActionType.IAIJUTSU,
             ActionType.COUNTERATTACK, ActionType.FEINT,
+            ActionType.STANCE, ActionType.FOCUS,
         ):
             if current:
                 sequences.append(current)
@@ -212,12 +213,24 @@ def render_round_log(log: CombatLog) -> None:
     """
     combatants = log.combatants
 
-    # Group actions by round — initiative actions mark round starts
+    # Separate pre-initiative duel actions from round actions
+    duel_actions: list[CombatAction] = []
+    combat_actions: list[CombatAction] = []
+    found_initiative = False
+    for action in log.actions:
+        if action.action_type == ActionType.INITIATIVE:
+            found_initiative = True
+        if found_initiative:
+            combat_actions.append(action)
+        else:
+            duel_actions.append(action)
+
+    # Group combat actions by round — initiative actions mark round starts
     rounds: list[list[CombatAction]] = []
     current_round: list[CombatAction] = []
     init_count = 0
 
-    for action in log.actions:
+    for action in combat_actions:
         if action.action_type == ActionType.INITIATIVE:
             init_count += 1
             if init_count > 2 and init_count % 2 == 1:
@@ -227,8 +240,41 @@ def render_round_log(log: CombatLog) -> None:
     if current_round:
         rounds.append(current_round)
 
+    total_sections = len(rounds) + (1 if duel_actions else 0)
+    section_idx = 0
+
+    # Render duel stage if present
+    if duel_actions:
+        section_idx += 1
+        with st.expander(
+            "Iaijutsu Duel", expanded=(section_idx == total_sections),
+        ):
+            sequences = _group_action_sequences(duel_actions)
+            # Seed prev_status from the first snapshot so the initial
+            # "all zeros" status line is never displayed.
+            prev_status: dict[str, FighterStatus] | None = None
+            for action in duel_actions:
+                if action.status_after:
+                    prev_status = action.status_after
+                    break
+            for seq in sequences:
+                for action in seq:
+                    is_fighter_1 = (action.actor == combatants[0])
+                    _render_action_aligned(
+                        action, is_fighter_1, show_phase=False,
+                    )
+                last_status = None
+                for action in reversed(seq):
+                    if action.status_after:
+                        last_status = action.status_after
+                        break
+                if last_status and last_status != prev_status:
+                    _render_status_between(last_status)
+                    prev_status = last_status
+
     for i, round_actions in enumerate(rounds, 1):
-        with st.expander(f"Round {i}", expanded=(i == len(rounds))):
+        section_idx += 1
+        with st.expander(f"Round {i}", expanded=(section_idx == total_sections)):
             sequences = _group_action_sequences(round_actions)
             for seq in sequences:
                 for action in seq:
@@ -256,6 +302,8 @@ _ACTION_ICONS = {
     ActionType.IAIJUTSU: "⚡",
     ActionType.COUNTERATTACK: "🗡️↩️",
     ActionType.FEINT: "🎭",
+    ActionType.STANCE: "🔍",
+    ActionType.FOCUS: "🧘",
 }
 
 
@@ -313,7 +361,9 @@ def _damage_icon(action: CombatAction) -> str:
     return "💥"
 
 
-def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
+def _render_action_aligned(
+    action: CombatAction, is_fighter_1: bool, *, show_phase: bool = True,
+) -> None:
     """Render a single combat action, left-aligned for Fighter 1, right for Fighter 2."""
     if action.action_type == ActionType.WOUND_CHECK:
         icon = _wound_check_icon(action)
@@ -323,6 +373,10 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
         icon = _parry_icon(action)
     else:
         icon = _ACTION_ICONS.get(action.action_type, "▪️")
+
+    # Strike decision uses ⚡ instead of default focus icon
+    if action.label == "strike":
+        icon = _ACTION_ICONS.get(ActionType.IAIJUTSU, "⚡")
 
     # Prepend interrupt indicator for out-of-turn actions
     if action.action_type == ActionType.INTERRUPT:
@@ -334,7 +388,9 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
     elif action.label and "SA counterattack" in action.label:
         icon = f"❗{icon}"
 
-    if action.action_type == ActionType.INITIATIVE:
+    if not show_phase:
+        phase_str = ""
+    elif action.action_type == ActionType.INITIATIVE:
         phase_str = "Initiative"
     elif action.phase == 0:
         phase_str = "Phase 0"
@@ -343,7 +399,9 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
 
     if action.success is not None:
         result = "**HIT**" if action.success else "miss"
-        if action.action_type in (ActionType.PARRY, ActionType.INTERRUPT):
+        if action.label == "contested iaijutsu":
+            result = "**chooses first**" if action.success else "chooses second"
+        elif action.action_type in (ActionType.PARRY, ActionType.INTERRUPT):
             result = "**PARRIED**" if action.success else "failed"
         if action.action_type == ActionType.WOUND_CHECK:
             if action.success:
@@ -398,6 +456,8 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
                 rolled_display.append(f"~~{d}~~")
         dice_str = f" [{', '.join(rolled_display)}]"
 
+    phase_prefix = f" **{phase_str}** |" if phase_str else ""
+
     if action.action_type == ActionType.INITIATIVE:
         phases = ", ".join(str(d) for d in action.dice_kept)
         # Surface parenthetical annotations from the description
@@ -405,7 +465,7 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
         annotations = extract_annotations(action.description)
         ann_str = f" {annotations}" if annotations else ""
         text = (
-            f"{icon} **{phase_str}** | {action.actor} | "
+            f"{icon}{phase_prefix} {action.actor} | "
             f"Action dice: phases {phases}{dice_str}{ann_str}"
         )
     else:
@@ -421,7 +481,7 @@ def _render_action_aligned(action: CombatAction, is_fighter_1: bool) -> None:
         notes_str = f" {notes}" if notes else ""
         action_label = action.label or action.action_type.value
         text = (
-            f"{icon} **{phase_str}** | {action.actor} | "
+            f"{icon}{phase_prefix} {action.actor} | "
             f"{pool_prefix}{action_label}{tn_str}{total_str} {result}{dice_str}{notes_str}"
         )
 

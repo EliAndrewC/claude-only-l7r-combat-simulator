@@ -2,7 +2,6 @@
 
 This project will simulate my game's combat system to facilitate playtesting.
 This will eventually involve:
--> showing individual combats and how they play out
 -> being able to test out what happens when we tweak the parameters / thresholds
     for the various decisions made by combatants to determine the optimal
     strategies for spending resources and applying bonuses
@@ -10,7 +9,7 @@ This will eventually involve:
     yield the most combat effectiveness given the various strategies
 -> having groups of people fight to see which combinations of schools work best
     with one another (rather than 1-on-1)
--> implementing rules for duels and applying the same analysis to those
+-> applying the same analysis to iaijutsu duels in addition to melee combat
 -> running mass simulations and summarizing the statistics and the effects that
     changing decisions has on them
 

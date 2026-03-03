@@ -412,6 +412,120 @@ class TestAttackVoidStrategy:
         assert result >= 0
 
 
+class TestConsumeAttackDie:
+    """consume_attack_die: pending die, explicit die, phase die branches."""
+
+    def test_pending_die_found(self) -> None:
+        """Consumes pending die when it exists in actions_remaining."""
+        fighter = _make_fighter(knack_rank=1)
+        fighter.actions_remaining = [3, 5, 7]
+        fighter.set_pending_die(5)
+        result = fighter.consume_attack_die(3)
+        assert result == 5
+        assert 5 not in fighter.actions_remaining
+        assert fighter._pending_die is None
+
+    def test_pending_die_not_in_actions(self) -> None:
+        """Returns None when pending die is not in actions_remaining."""
+        fighter = _make_fighter(knack_rank=1)
+        fighter.actions_remaining = [3, 7]
+        fighter.set_pending_die(5)
+        result = fighter.consume_attack_die(3)
+        assert result is None
+        assert fighter._pending_die is None
+
+    def test_explicit_die_value_found(self) -> None:
+        """Consumes explicit die_value when in actions_remaining."""
+        fighter = _make_fighter(knack_rank=1)
+        fighter.actions_remaining = [2, 4, 6]
+        result = fighter.consume_attack_die(2, die_value=4)
+        assert result == 4
+        assert 4 not in fighter.actions_remaining
+
+    def test_explicit_die_value_not_found(self) -> None:
+        """Returns None when explicit die_value is not in actions_remaining."""
+        fighter = _make_fighter(knack_rank=1)
+        fighter.actions_remaining = [2, 6]
+        result = fighter.consume_attack_die(2, die_value=4)
+        assert result is None
+
+    def test_phase_die_found(self) -> None:
+        """Falls through to consume phase die when no pending/explicit die."""
+        fighter = _make_fighter(knack_rank=1)
+        fighter.actions_remaining = [3, 5]
+        result = fighter.consume_attack_die(3)
+        assert result == 3
+        assert 3 not in fighter.actions_remaining
+
+    def test_phase_die_not_found(self) -> None:
+        """Returns None when phase die is not in actions_remaining."""
+        fighter = _make_fighter(knack_rank=1)
+        fighter.actions_remaining = [5, 7]
+        result = fighter.consume_attack_die(3)
+        assert result is None
+
+
+class TestChooseAttackForceLunge:
+    """choose_attack returns lunge when _force_lunge is True."""
+
+    def test_force_lunge(self) -> None:
+        fighter = _make_fighter(knack_rank=3)
+        fighter._force_lunge = True
+        choice, void_spend = fighter.choose_attack("Generic", 3)
+        assert choice == "lunge"
+        assert void_spend == 0
+
+
+class TestResolvePostAttackInterruptGuards:
+    """resolve_post_attack_interrupt guard conditions."""
+
+    def test_below_4th_dan_does_nothing(self) -> None:
+        """No counter-lunge below 4th Dan."""
+        fighter = _make_fighter(knack_rank=3)
+        fighter.actions_remaining = [3, 5]
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_recursion_guard(self) -> None:
+        """No counter-lunge when already in counter-lunge."""
+        fighter = _make_fighter(knack_rank=4)
+        fighter.actions_remaining = [3, 5]
+        fighter._in_counter_lunge = True
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_no_actions_remaining(self) -> None:
+        """No counter-lunge when no dice available."""
+        fighter = _make_fighter(knack_rank=4)
+        fighter.actions_remaining = []
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        assert fighter.actions_remaining == []
+
+    def test_self_mortally_wounded(self) -> None:
+        """No counter-lunge when self is mortally wounded."""
+        fighter = _make_fighter(knack_rank=4, earth=2)
+        fighter.actions_remaining = [3, 5]
+        fighter.state.log.wounds[fighter.name].serious_wounds = 4
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_attacker_mortally_wounded(self) -> None:
+        """No counter-lunge when attacker is mortally wounded."""
+        fighter = _make_fighter(knack_rank=4, earth=2)
+        fighter.actions_remaining = [3, 5]
+        fighter.state.log.wounds["Generic"].serious_wounds = 4
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_once_per_round(self) -> None:
+        """Counter-lunge is once per round."""
+        fighter = _make_fighter(knack_rank=4)
+        fighter.actions_remaining = [3, 5, 7]
+        fighter._counter_lunge_used_this_round = True
+        fighter.resolve_post_attack_interrupt("Generic", 3)
+        assert fighter.actions_remaining == [3, 5, 7]
+
+
 class TestFactoryRegistration:
     """Isawa Duelist creates via fighter factory."""
 

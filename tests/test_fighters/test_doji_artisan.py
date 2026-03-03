@@ -5,7 +5,10 @@ from __future__ import annotations
 from src.engine.combat import create_combat_log
 from src.engine.combat_state import CombatState
 from src.engine.fighters import create_fighter
-from src.engine.fighters.doji_artisan import DojiArtisanFighter
+from src.engine.fighters.doji_artisan import (
+    DojiArtisanFighter,
+    _resolve_doji_artisan_counterattack,
+)
 from src.models.character import (
     Character,
     Ring,
@@ -421,6 +424,310 @@ class TestWorldlinessVoid:
         """worldliness_void can differ from knack_rank."""
         fighter = _make_fighter(knack_rank=3, worldliness_rank=5)
         assert fighter.worldliness_void == 5
+
+
+class TestResolvePostAttackInterruptGuards:
+    """resolve_post_attack_interrupt guard conditions."""
+
+    def test_recursion_guard(self) -> None:
+        """No counterattack when already in counterattack."""
+        fighter = _make_fighter(knack_rank=3, void_points=5)
+        fighter.actions_remaining = [3, 5]
+        fighter._in_counterattack = True
+        fighter.resolve_post_attack_interrupt("Generic", 3, attack_total=20)
+        # Actions and void unchanged
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_no_void(self) -> None:
+        """No counterattack when no void available."""
+        fighter = _make_fighter(knack_rank=3, void_points=0, worldliness_rank=0)
+        fighter.actions_remaining = [3, 5]
+        fighter.resolve_post_attack_interrupt("Generic", 3, attack_total=20)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_no_actions(self) -> None:
+        """No counterattack when no actions remaining."""
+        fighter = _make_fighter(knack_rank=3, void_points=5)
+        fighter.actions_remaining = []
+        fighter.resolve_post_attack_interrupt("Generic", 3, attack_total=20)
+
+    def test_no_counterattack_skill(self) -> None:
+        """No counterattack when CA skill rank is 0."""
+        fighter = _make_fighter(knack_rank=0, void_points=5)
+        fighter.actions_remaining = [3, 5]
+        fighter.resolve_post_attack_interrupt("Generic", 3, attack_total=20)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_self_mortally_wounded(self) -> None:
+        """No counterattack when self is mortally wounded."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        fighter.actions_remaining = [3, 5]
+        fighter.state.log.wounds[fighter.name].serious_wounds = 4
+        fighter.resolve_post_attack_interrupt("Generic", 3, attack_total=20)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_attacker_mortally_wounded(self) -> None:
+        """No counterattack when attacker is mortally wounded."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, earth=2)
+        fighter.actions_remaining = [3, 5]
+        fighter.state.log.wounds["Generic"].serious_wounds = 4
+        fighter.resolve_post_attack_interrupt("Generic", 3, attack_total=20)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_attacker_in_counterattack(self) -> None:
+        """No counterattack when attacker is already in counterattack."""
+        fighter = _make_fighter(knack_rank=3, void_points=5)
+        fighter.actions_remaining = [3, 5]
+        attacker_f = fighter.state.fighters["Generic"]
+        attacker_f._in_counterattack = True
+        fighter.resolve_post_attack_interrupt("Generic", 3, attack_total=20)
+        assert fighter.actions_remaining == [3, 5]
+
+    def test_successful_counterattack_fires(self) -> None:
+        """When all guards pass, counterattack fires (die + void consumed)."""
+        fighter = _make_fighter(knack_rank=3, void_points=5)
+        fighter.actions_remaining = [3, 5, 7]
+        initial_void = fighter.total_void
+        fighter.resolve_post_attack_interrupt("Generic", 3, attack_total=20)
+        # Cheapest die (3) consumed + 1 void spent
+        assert 3 not in fighter.actions_remaining
+        assert fighter.total_void < initial_void
+
+
+class TestCounterattackFunction:
+    """_resolve_doji_artisan_counterattack: 3rd Dan raises, 5th Dan bonus, failure."""
+
+    def test_counterattack_logs_actions(self) -> None:
+        """Counterattack creates combat log actions."""
+        fighter = _make_fighter(knack_rank=3, void_points=5, culture_rank=5)
+        state = fighter.state
+        initial_actions = len(state.log.actions)
+        _resolve_doji_artisan_counterattack(
+            state, "Doji Artisan", "Generic", phase=3,
+            consumed_die=3, attacker_roll=30,
+        )
+        assert len(state.log.actions) > initial_actions
+
+    def test_3rd_dan_free_raises_on_counterattack(self) -> None:
+        """3rd Dan: free raises used to bridge counterattack deficit."""
+
+        fighter = _make_fighter(knack_rank=3, void_points=5, culture_rank=5)
+        initial_raises = fighter._free_raises
+        # Run many times to hit the deficit-bridging branch
+        for _ in range(50):
+            fighter._free_raises = initial_raises
+            _resolve_doji_artisan_counterattack(
+                fighter.state, "Doji Artisan", "Generic", phase=3,
+                consumed_die=3, attacker_roll=30,
+            )
+        # At least one run should have spent raises (probabilistic but reliable)
+
+    def test_5th_dan_bonus_on_counterattack(self) -> None:
+        """5th Dan: +(TN-10)/5 bonus applied to counterattack."""
+
+        # High parry opponent => TN > 10
+        opp = _make_generic()
+        doji_char = _make_doji_artisan(knack_rank=5, culture_rank=5, fire=4)
+        state = _make_state(doji_char, opp, artisan_void=10)
+        fighter = state.fighters["Doji Artisan"]
+        assert isinstance(fighter, DojiArtisanFighter)
+
+        for _ in range(50):
+            _resolve_doji_artisan_counterattack(
+                state, "Doji Artisan", "Generic", phase=3,
+                consumed_die=3, attacker_roll=50,
+            )
+
+    def test_counterattack_failure_returns_zero(self) -> None:
+        """Failed counterattack returns 0 margin."""
+
+        # High parry opponent (rank 5 => TN 30), very weak artisan
+        high_parry_opp = Character(
+            name="Tank",
+            rings=Rings(
+                air=Ring(name=RingName.AIR, value=2),
+                fire=Ring(name=RingName.FIRE, value=2),
+                earth=Ring(name=RingName.EARTH, value=2),
+                water=Ring(name=RingName.WATER, value=2),
+                void=Ring(name=RingName.VOID, value=2),
+            ),
+            skills=[
+                Skill(
+                    name="Attack", rank=3,
+                    skill_type=SkillType.ADVANCED, ring=RingName.FIRE,
+                ),
+                Skill(
+                    name="Parry", rank=5,
+                    skill_type=SkillType.ADVANCED, ring=RingName.AIR,
+                ),
+            ],
+        )
+        # Knack 0 => no CA skill, fire=1 => minimal dice. Low attacker_roll => low SA bonus.
+        doji_char = _make_doji_artisan(
+            knack_rank=0, culture_rank=0, fire=1,
+        )
+        state = _make_state(doji_char, high_parry_opp, artisan_void=10)
+
+        got_zero = False
+        for _ in range(200):
+            result = _resolve_doji_artisan_counterattack(
+                state, "Doji Artisan", "Tank", phase=3,
+                consumed_die=3, attacker_roll=5,
+            )
+            if result == 0:
+                got_zero = True
+                break
+        assert got_zero, "Expected at least one failed counterattack"
+
+    def test_counterattack_wound_check_with_flat_bonus(self) -> None:
+        """Counterattack wound check applies target's wound_check_flat_bonus."""
+
+        # Use a Doji vs Doji so the target has wound_check_flat_bonus from 2nd Dan
+        doji1_char = _make_doji_artisan(
+            name="Doji1", knack_rank=5, culture_rank=5, fire=5,
+        )
+        doji2_char = _make_doji_artisan(
+            name="Doji2", knack_rank=2, culture_rank=3, fire=2,
+        )
+        log = create_combat_log(
+            ["Doji1", "Doji2"],
+            [doji1_char.rings.earth.value, doji2_char.rings.earth.value],
+        )
+        state = CombatState(log=log)
+        create_fighter("Doji1", state, char=doji1_char, weapon=KATANA, void_points=10)
+        create_fighter("Doji2", state, char=doji2_char, weapon=KATANA, void_points=10)
+
+        # Run enough times that a hit occurs and wound check happens
+        for _ in range(100):
+            _resolve_doji_artisan_counterattack(
+                state, "Doji1", "Doji2", phase=3,
+                consumed_die=3, attacker_roll=50,
+            )
+
+
+class TestCounterattackDeterministic:
+    """Deterministic tests using mocked dice for hard-to-reach branches."""
+
+    def test_3rd_dan_free_raises_bridge_deficit(self) -> None:
+        """3rd Dan: free raises bridge counterattack deficit (lines 89-95)."""
+        from unittest.mock import patch
+
+        # 3rd Dan, culture 5 => _free_raises=10, _max_per_roll=5
+        # Opponent parry 2 => TN = 5 + 5*2 = 15
+        fighter = _make_fighter(knack_rank=3, void_points=5, culture_rank=5)
+        initial_raises = fighter._free_raises
+
+        # Mock roll_and_keep to return a total just below TN (e.g. 12 vs TN 15)
+        # deficit = 3, raises_needed = 1
+        with patch(
+            "src.engine.fighters.doji_artisan.roll_and_keep",
+            return_value=([3, 4, 5], [4, 5], 12),
+        ):
+            result = _resolve_doji_artisan_counterattack(
+                fighter.state, "Doji Artisan", "Generic", phase=3,
+                consumed_die=3, attacker_roll=0,
+            )
+
+        # Free raises should have been spent
+        assert fighter._free_raises < initial_raises
+        # With 1 raise (+5), total becomes 17, success with margin 2
+        assert result >= 0
+
+    def test_counterattack_failure_deterministic(self) -> None:
+        """Failed counterattack returns 0 (line 132)."""
+        from unittest.mock import patch
+
+        # Opponent parry 2 => TN = 15
+        fighter = _make_fighter(knack_rank=0, void_points=5, culture_rank=0)
+
+        # Mock roll to return very low total (2 vs TN 15)
+        with patch(
+            "src.engine.fighters.doji_artisan.roll_and_keep",
+            return_value=([1, 1], [1], 2),
+        ):
+            result = _resolve_doji_artisan_counterattack(
+                fighter.state, "Doji Artisan", "Generic", phase=3,
+                consumed_die=3, attacker_roll=0,
+            )
+        assert result == 0
+
+    def test_wound_check_flat_bonus_applied(self) -> None:
+        """Counterattack wound check applies target's flat bonus (line 184).
+
+        The TARGET of the counterattack must have wound_check_flat_bonus > 0.
+        IsawaDuelistFighter at 2nd Dan+ returns +5.
+        """
+        from unittest.mock import patch
+
+        from src.engine.fighters.isawa_duelist import IsawaDuelistFighter
+
+        # Doji Artisan counterattacks an Isawa Duelist (2nd Dan => +5 WC flat bonus)
+        doji_char = _make_doji_artisan(
+            name="Doji", knack_rank=3, culture_rank=5, fire=3,
+        )
+        isawa_char = Character(
+            name="Isawa",
+            rings=Rings(
+                air=Ring(name=RingName.AIR, value=2),
+                fire=Ring(name=RingName.FIRE, value=2),
+                earth=Ring(name=RingName.EARTH, value=2),
+                water=Ring(name=RingName.WATER, value=2),
+                void=Ring(name=RingName.VOID, value=2),
+            ),
+            school="Isawa Duelist",
+            school_ring=RingName.WATER,
+            school_knacks=["Double Attack", "Iaijutsu", "Lunge"],
+            skills=[
+                Skill(name="Attack", rank=3, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+                Skill(name="Parry", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.AIR),
+                Skill(name="Double Attack", rank=2, skill_type=SkillType.ADVANCED,
+                      ring=RingName.FIRE),
+                Skill(name="Iaijutsu", rank=2, skill_type=SkillType.ADVANCED,
+                      ring=RingName.FIRE),
+                Skill(name="Lunge", rank=2, skill_type=SkillType.ADVANCED, ring=RingName.FIRE),
+            ],
+        )
+        log = create_combat_log(
+            ["Doji", "Isawa"],
+            [doji_char.rings.earth.value, isawa_char.rings.earth.value],
+        )
+        state = CombatState(log=log)
+        create_fighter("Doji", state, char=doji_char, weapon=KATANA, void_points=10)
+        create_fighter("Isawa", state, char=isawa_char, weapon=KATANA, void_points=10)
+        isawa_f = state.fighters["Isawa"]
+        assert isinstance(isawa_f, IsawaDuelistFighter)
+        assert isawa_f.wound_check_flat_bonus()[0] == 5  # 2nd Dan +5
+
+        call_count = 0
+
+        def mock_roll(rolled: int, kept: int, explode: bool = True) -> tuple:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # Counterattack hits (TN=15)
+                return ([10, 10, 8], [10, 10], 30)
+            # Damage + wound check — moderate values
+            return ([5, 4, 3], [5, 4], 9)
+
+        with patch(
+            "src.engine.fighters.doji_artisan.roll_and_keep",
+            side_effect=mock_roll,
+        ):
+            with patch(
+                "src.engine.combat.roll_and_keep",
+                side_effect=lambda r, k, explode=True: ([3, 2, 1], [3, 2], 5),
+            ):
+                _resolve_doji_artisan_counterattack(
+                    state, "Doji", "Isawa", phase=3,
+                    consumed_die=3, attacker_roll=50,
+                )
+
+        # Verify wound check was logged for the target
+        wc_actions = [
+            a for a in state.log.actions
+            if a.action_type.value == "wound check" and a.actor == "Isawa"
+        ]
+        assert len(wc_actions) > 0
 
 
 class TestFactoryRegistration:

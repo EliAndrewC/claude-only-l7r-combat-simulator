@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from src.models.character import Character
     from src.models.weapon import Weapon
 
+from src.models.mass_simulation import StrategyConfig
+
 
 class Fighter:
     """Base fighter wrapping a Character + CombatState reference.
@@ -35,6 +37,7 @@ class Fighter:
         matsu_bonuses: list[int] | None = None,
         shinjo_bonuses: list[int] | None = None,
         lunge_target_bonus: int = 0,
+        strategy: StrategyConfig | None = None,
     ) -> None:
         self._name = name
         self._state = state
@@ -53,6 +56,7 @@ class Fighter:
         self.matsu_bonuses = matsu_bonuses if matsu_bonuses is not None else []
         self.shinjo_bonuses = shinjo_bonuses if shinjo_bonuses is not None else []
         self.lunge_target_bonus = lunge_target_bonus
+        self.strategy = strategy or StrategyConfig()
         self.parry_tn_reduction = 0
         self.feint_free_raises = 0
         self._stored_parry_total = 0
@@ -435,6 +439,7 @@ class Fighter:
             weapon_rolled, attacker_fire,
             wound_info.serious_wounds, wound_info.earth_ring,
             wound_info.is_crippled,
+            parry_threshold=self.strategy.parry_aggressiveness,
         )
 
     def can_interrupt(self) -> bool:

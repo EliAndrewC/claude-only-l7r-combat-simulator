@@ -17,6 +17,7 @@ def _matsu_attack_choice(
     dan: int,
     is_crippled: bool,
     known_bonus: int = 0,
+    da_threshold: float = 0.85,
 ) -> tuple[str, int]:
     """Decide whether Matsu uses Lunge or Double Attack, and void to spend.
 
@@ -71,7 +72,7 @@ def _matsu_attack_choice(
             )
             return "double_attack", void_spend
     else:
-        if da_expected + max_void_boost >= da_tn * 0.85:
+        if da_expected + max_void_boost >= da_tn * da_threshold:
             if da_expected >= da_tn:
                 return "double_attack", 0
             deficit = da_tn - da_expected
@@ -143,6 +144,7 @@ class MatsuFighter(Fighter):
             self.char.rings.lowest(),
             self.dan,
             is_crippled,
+            da_threshold=self.strategy.da_threshold,
         )
         return choice, void_spend
 

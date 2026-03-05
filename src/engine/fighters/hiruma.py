@@ -95,11 +95,13 @@ class HirumaFighter(Fighter):
         """1st Dan: +1 rolled die on parry."""
         return 1 if self.dan >= 1 else 0
 
-    def parry_bonus(self) -> tuple[int, str]:
+    def parry_bonus(self) -> int:
         """2nd Dan: Free raise on parry (+5)."""
-        if self.dan >= 2:
-            return 5, " (hiruma 2nd Dan: free raise +5)"
-        return 0, ""
+        return 5 if self.dan >= 2 else 0
+
+    def parry_bonus_description(self, bonus: int) -> str:
+        """2nd Dan: hiruma-specific parry bonus description."""
+        return f" (hiruma 2nd Dan: free raise +{bonus})"
 
     def on_parry_attempt(
         self, parry_succeeded: bool, margin: int,

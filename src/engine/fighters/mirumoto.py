@@ -20,6 +20,7 @@ def _should_use_double_attack(
     dan: int,
     is_crippled: bool,
     known_bonus: int = 0,
+    da_threshold: float = 0.85,
 ) -> tuple[bool, int]:
     """Decide whether to use Double Attack and how much void to spend.
 
@@ -54,7 +55,7 @@ def _should_use_double_attack(
 
     if (
         normal_expected >= base_tn
-        and da_expected + max_void_boost >= da_tn * 0.85
+        and da_expected + max_void_boost >= da_tn * da_threshold
     ):
         if da_expected >= da_tn:
             return True, 0
@@ -119,6 +120,7 @@ class MirumotoFighter(Fighter):
                 self.char.rings.lowest(),
                 self.dan,
                 is_crippled,
+                da_threshold=self.strategy.da_threshold,
             )
             if use_da:
                 return "double_attack", void_spend
@@ -213,6 +215,7 @@ class MirumotoFighter(Fighter):
             wound_info.is_crippled,
             is_mirumoto=True,
             known_bonus=known_bonus,
+            parry_threshold=self.strategy.parry_aggressiveness,
         )
 
     def should_interrupt_parry(

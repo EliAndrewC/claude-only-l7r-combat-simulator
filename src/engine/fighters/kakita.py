@@ -31,6 +31,7 @@ def _kakita_attack_choice(
     dan: int,
     is_crippled: bool,
     known_bonus: int = 0,
+    da_threshold: float = 0.85,
 ) -> str:
     """Decide whether Kakita uses Lunge or Double Attack (never spends void).
 
@@ -48,7 +49,7 @@ def _kakita_attack_choice(
     da_kept = fire_ring
     da_expected = estimate_roll(da_rolled, da_kept) + known_bonus
 
-    if da_expected >= da_tn * 0.85:
+    if da_expected >= da_tn * da_threshold:
         return "double_attack"
 
     return "lunge"
@@ -235,7 +236,9 @@ def _resolve_kakita_phase0_attack(
     max_spend = defender.rings.lowest()
     void_spend = should_spend_void_on_wound_check(
         water_value, wound_tracker.light_wounds, def_ctx.total_void,
-        max_spend=max_spend, extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
+        max_spend=max_spend,
+        threshold=def_ctx.strategy.void_threshold,
+        extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
     )
     wc_from_temp, wc_from_reg, wc_from_wl = def_ctx.spend_void(void_spend)
     wc_void_label = void_spent_label(wc_from_temp, wc_from_reg, wc_from_wl)
@@ -318,6 +321,7 @@ def _resolve_kakita_phase0_attack(
             shinjo_wc_bonus_pool=def_shinjo_pool,
             lw_severity_divisor=def_ctx.wound_check_lw_severity_divisor(),
             mortal_wound_threshold=wound_tracker.mortal_wound_threshold,
+            lw_conversion=def_ctx.strategy.lw_conversion,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -538,7 +542,9 @@ def _resolve_kakita_5th_dan(
     max_spend = defender.rings.lowest()
     void_spend = should_spend_void_on_wound_check(
         water_value, wound_tracker.light_wounds, def_ctx.total_void,
-        max_spend=max_spend, extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
+        max_spend=max_spend,
+        threshold=def_ctx.strategy.void_threshold,
+        extra_rolled=wc_extra_rolled, tn_bonus=ab10_bonus,
     )
     wc_from_temp, wc_from_reg, wc_from_wl = def_ctx.spend_void(void_spend)
     wc_void_label = void_spent_label(wc_from_temp, wc_from_reg, wc_from_wl)
@@ -620,6 +626,7 @@ def _resolve_kakita_5th_dan(
             shinjo_wc_bonus_pool=def_shinjo_pool,
             lw_severity_divisor=def_ctx.wound_check_lw_severity_divisor(),
             mortal_wound_threshold=wound_tracker.mortal_wound_threshold,
+            lw_conversion=def_ctx.strategy.lw_conversion,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1
@@ -731,6 +738,7 @@ class KakitaFighter(Fighter):
             self.dan,
             is_crippled,
             known_bonus=known_bonus,
+            da_threshold=self.strategy.da_threshold,
         )
         # Kakita never spends void on attacks
         return choice, 0
@@ -842,6 +850,7 @@ class KakitaFighter(Fighter):
             wound_info.earth_ring,
             wound_info.is_crippled,
             is_kakita=True,
+            parry_threshold=self.strategy.parry_aggressiveness,
         )
 
     # -- Special phase hooks ------------------------------------------------

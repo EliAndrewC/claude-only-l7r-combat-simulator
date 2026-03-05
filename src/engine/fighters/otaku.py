@@ -13,6 +13,7 @@ def _otaku_attack_choice(
     defender_parry: int,
     dan: int,
     is_crippled: bool,
+    da_threshold: float = 0.85,
 ) -> str:
     """Decide whether Otaku uses Lunge or Double Attack (never spends void).
 
@@ -30,7 +31,7 @@ def _otaku_attack_choice(
     da_kept = fire_ring
     da_expected = estimate_roll(da_rolled, da_kept)
 
-    if da_expected >= da_tn * 0.85:
+    if da_expected >= da_tn * da_threshold:
         return "double_attack"
 
     return "lunge"
@@ -105,6 +106,7 @@ class OtakuFighter(Fighter):
             def_parry_rank,
             self.dan,
             is_crippled,
+            da_threshold=self.strategy.da_threshold,
         )
         return choice, 0
 
@@ -140,6 +142,7 @@ class OtakuFighter(Fighter):
             wound_info.earth_ring,
             wound_info.is_crippled,
             is_kakita=True,
+            parry_threshold=self.strategy.parry_aggressiveness,
         )
 
     def should_interrupt_parry(

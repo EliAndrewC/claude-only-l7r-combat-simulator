@@ -237,15 +237,15 @@ class TestParryBonus:
 
     def test_second_dan(self) -> None:
         fighter = _make_fighter(knack_rank=2)
-        bonus, note = fighter.parry_bonus()
+        bonus = fighter.parry_bonus()
         assert bonus == 5
+        note = fighter.parry_bonus_description(bonus)
         assert "hiruma 2nd Dan" in note
 
     def test_below_second_dan(self) -> None:
         fighter = _make_fighter(knack_rank=1)
-        bonus, note = fighter.parry_bonus()
+        bonus = fighter.parry_bonus()
         assert bonus == 0
-        assert note == ""
 
 
 class TestOnParryAttempt3rdDan:

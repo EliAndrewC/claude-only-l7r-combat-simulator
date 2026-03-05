@@ -20,6 +20,7 @@ def _shinjo_attack_choice(
     dan: int,
     is_crippled: bool,
     sa_bonus: int = 0,
+    da_threshold: float = 0.85,
 ) -> tuple[str, int]:
     """Decide whether Shinjo uses Double Attack or Lunge at phase 10.
 
@@ -45,8 +46,8 @@ def _shinjo_attack_choice(
     if da_expected >= da_tn:
         return "double_attack", 0
 
-    if da_expected + usable * 5.5 >= da_tn * 0.85:
-        deficit = da_tn * 0.85 - da_expected
+    if da_expected + usable * 5.5 >= da_tn * da_threshold:
+        deficit = da_tn * da_threshold - da_expected
         void_spend = min(usable, max(1, int(deficit / 5.5 + 0.5)))
         return "double_attack", void_spend
 
@@ -192,6 +193,7 @@ class ShinjoFighter(Fighter):
             self.dan,
             is_crippled,
             sa_bonus=sa_bonus,
+            da_threshold=self.strategy.da_threshold,
         )
         return choice, void_spend
 

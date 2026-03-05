@@ -112,9 +112,9 @@ class KuniWitchHunterFighter(Fighter):
 
     # -- Damage hooks -------------------------------------------------------
 
-    def weapon_rolled_boost(self) -> int:
+    def weapon_rolled_boost(self, weapon_rolled: int, weapon_kept: int) -> int:
         """1st Dan: +1 rolled die on damage."""
-        return 1 if self.dan >= 1 else 0
+        return weapon_rolled + 1 if self.dan >= 1 else weapon_rolled
 
     # -- Wound check hooks --------------------------------------------------
 

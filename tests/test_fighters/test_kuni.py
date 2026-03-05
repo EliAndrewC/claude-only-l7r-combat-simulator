@@ -189,17 +189,17 @@ class TestDamageHooks:
     def test_weapon_rolled_boost_at_dan_1(self) -> None:
         """1st Dan: +1 rolled die on damage."""
         fighter = _make_fighter(knack_rank=1)
-        assert fighter.weapon_rolled_boost() == 1
+        assert fighter.weapon_rolled_boost(4, 2) == 5
 
     def test_weapon_rolled_boost_at_dan_0(self) -> None:
         """No extra die before 1st Dan."""
         fighter = _make_fighter(knack_rank=0)
-        assert fighter.weapon_rolled_boost() == 0
+        assert fighter.weapon_rolled_boost(4, 2) == 4
 
     def test_weapon_rolled_boost_at_dan_5(self) -> None:
         """Higher dans still get +1."""
         fighter = _make_fighter(knack_rank=5)
-        assert fighter.weapon_rolled_boost() == 1
+        assert fighter.weapon_rolled_boost(4, 2) == 5
 
 
 class TestWoundCheck:

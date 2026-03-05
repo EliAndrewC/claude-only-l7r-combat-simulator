@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.engine.fighters.base import Fighter
+    from src.models.mass_simulation import StrategyConfig
 
 from src.engine.combat import (
     calculate_attack_tn,
@@ -522,6 +523,8 @@ def simulate_combat(
     weapon_b: Weapon,
     max_rounds: int = 20,
     is_duel: bool = False,
+    strategy_a: StrategyConfig | None = None,
+    strategy_b: StrategyConfig | None = None,
 ) -> CombatLog:
     """Run a full combat between two characters.
 
@@ -532,6 +535,8 @@ def simulate_combat(
         weapon_b: Second combatant's weapon.
         max_rounds: Maximum number of rounds before declaring a draw.
         is_duel: If True, begin with an iaijutsu duel before normal combat.
+        strategy_a: Optional strategy config for combatant A.
+        strategy_b: Optional strategy config for combatant B.
 
     Returns:
         A CombatLog with all actions, wounds, and winner (or None for draw).
@@ -552,11 +557,13 @@ def simulate_combat(
             char_a.name, state,
             char=char_a, weapon=weapon_a,
             void_points=char_a.void_points_max,
+            strategy=strategy_a,
         ),
         char_b.name: create_fighter(
             char_b.name, state,
             char=char_b, weapon=weapon_b,
             void_points=char_b.void_points_max,
+            strategy=strategy_b,
         ),
     }
 
@@ -1942,6 +1949,7 @@ def _resolve_attack(
         void_spend = _should_spend_void_on_wound_check(
             water_value, wound_tracker.light_wounds, wc_void_avail,
             max_spend=max_spend,
+            threshold=defender_fighter.strategy.void_threshold,
             extra_rolled=wc_extra_rolled,
             tn_bonus=ab10_bonus,
         )
@@ -2092,6 +2100,7 @@ def _resolve_attack(
             shinjo_wc_bonus_pool=defender_fighter.wc_bonus_pool_total(),
             lw_severity_divisor=defender_fighter.wound_check_lw_severity_divisor(),
             mortal_wound_threshold=wound_tracker.mortal_wound_threshold,
+            lw_conversion=defender_fighter.strategy.lw_conversion,
         )
         if should_convert:
             wound_tracker.serious_wounds += 1

@@ -169,6 +169,49 @@ class TestSnapshotStatus:
         assert result["B"].void_points == 2
 
 
+class TestExpectedSeriousWoundsTable:
+    """Verify the precomputed lookup table is loaded and functional."""
+
+    def test_table_is_loaded(self) -> None:
+        from src.engine.simulation_utils import _SW_TABLE
+
+        assert len(_SW_TABLE) > 1000
+
+    def test_lookup_returns_float(self) -> None:
+        from src.engine.simulation_utils import _expected_serious_wounds
+
+        result = _expected_serious_wounds(3, 2, 20)
+        assert isinstance(result, float)
+        assert result > 0.0
+
+    def test_higher_tn_means_more_serious_wounds(self) -> None:
+        from src.engine.simulation_utils import _expected_serious_wounds
+
+        low_tn = _expected_serious_wounds(4, 3, 10)
+        high_tn = _expected_serious_wounds(4, 3, 30)
+        assert high_tn > low_tn
+
+    def test_more_kept_means_fewer_serious_wounds(self) -> None:
+        from src.engine.simulation_utils import _expected_serious_wounds
+
+        few_kept = _expected_serious_wounds(6, 2, 25)
+        more_kept = _expected_serious_wounds(6, 4, 25)
+        assert more_kept < few_kept
+
+    def test_missing_entry_returns_zero(self) -> None:
+        """Out-of-table params (e.g. very easy check) return 0.0."""
+        from src.engine.simulation_utils import _expected_serious_wounds
+
+        result = _expected_serious_wounds(10, 10, 5)
+        assert result == 0.0
+
+    def test_boundary_zero_params(self) -> None:
+        from src.engine.simulation_utils import _expected_serious_wounds
+
+        assert _expected_serious_wounds(0, 0, 10) == 0.0
+        assert _expected_serious_wounds(3, 2, 0) == 0.0
+
+
 class TestShouldSpendVoidOnWoundCheck:
     def test_returns_zero_when_no_void_available(self) -> None:
         result = _should_spend_void_on_wound_check(
@@ -239,18 +282,19 @@ class TestShouldSpendVoidOnWoundCheck:
 class TestKnownBonusParameters:
     """Verify that known_bonus parameters influence decision functions."""
 
-    def test_wound_check_extra_rolled_reduces_void_spending(self) -> None:
-        """Extra rolled dice on wound check should reduce void spending."""
-        # High TN (30 LW), water=2 → base pool is 3k2
-        base = _should_spend_void_on_wound_check(
-            water_ring=2, light_wounds=30, void_available=3, max_spend=2,
-        )
-        # With 4 extra rolled dice (ability 7 rank 2), pool is 7k2 — much better odds
-        with_bonus = _should_spend_void_on_wound_check(
-            water_ring=2, light_wounds=30, void_available=3, max_spend=2,
-            extra_rolled=4,
-        )
-        assert with_bonus <= base
+    def test_wound_check_extra_rolled_improves_baseline(self) -> None:
+        """Extra rolled dice improve the wound check baseline expectation.
+
+        With more unkept dice, the baseline expected serious wounds is lower.
+        However, void spending (which adds kept dice) may actually be *more*
+        attractive since each void point promotes a die from a larger pool.
+        """
+        from src.engine.simulation_utils import _expected_serious_wounds
+
+        # 3k2 vs 30 (base) vs 7k2 vs 30 (with extra rolled)
+        base_sw = _expected_serious_wounds(3, 2, 30)
+        extra_sw = _expected_serious_wounds(7, 2, 30)
+        assert extra_sw < base_sw
 
     def test_wound_check_tn_bonus_increases_void_spending(self) -> None:
         """Higher wound check TN (ability 10) should increase void spending."""

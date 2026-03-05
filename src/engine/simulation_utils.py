@@ -5,10 +5,26 @@ No school-specific logic here -- only generic combat math and formatting.
 
 from __future__ import annotations
 
+import json
 import math
+import pathlib
 import random
 
 from src.models.character import Character
+
+# ---------------------------------------------------------------------------
+# Precomputed expected-serious-wounds lookup table
+# ---------------------------------------------------------------------------
+# Generated offline by Monte Carlo (10 000 sims per entry) for all practical
+# (rolled, kept, tn) combinations.  Loaded once at import time — every lookup
+# is a single dict access with no simulation at runtime.
+
+_TABLE_PATH = pathlib.Path(__file__).with_name("expected_sw_table.json")
+_SW_TABLE: dict[str, float] = {}
+
+if _TABLE_PATH.exists():
+    with _TABLE_PATH.open() as _f:
+        _SW_TABLE = json.load(_f)
 
 
 def estimate_roll(rolled: int, kept: int) -> float:
@@ -33,6 +49,19 @@ def estimate_roll(rolled: int, kept: int) -> float:
     return 10.0 * eff_kept * (2 * eff_rolled - eff_kept + 1) / (2.0 * (eff_rolled + 1)) + bonus
 
 
+def _expected_serious_wounds(rolled: int, kept: int, tn: int) -> float:
+    """Look up expected serious wounds from the precomputed table.
+
+    Falls back to 0.0 for entries not in the table (meaning the wound check
+    passes virtually every time at those parameters).
+    """
+    effective_kept = min(kept, rolled)
+    if rolled <= 0 or effective_kept <= 0 or tn <= 0:
+        return 0.0
+    key = f"{rolled},{effective_kept},{tn}"
+    return _SW_TABLE.get(key, 0.0)
+
+
 def should_spend_void_on_wound_check(
     water_ring: int,
     light_wounds: int,
@@ -44,8 +73,8 @@ def should_spend_void_on_wound_check(
 ) -> int:
     """Decide how many void points to spend on a wound check via Monte Carlo.
 
-    Uses a separate RNG seeded from the inputs so it is deterministic for
-    the same game state and does not disturb the main combat dice stream.
+    Uses _expected_serious_wounds (cached) so repeated calls with similar
+    dice pools are fast.
 
     Args:
         water_ring: The character's Water ring value.
@@ -63,38 +92,15 @@ def should_spend_void_on_wound_check(
         return 0
 
     limit = min(void_available, max_spend)
-    seed = hash((water_ring, light_wounds, void_available, max_spend, extra_rolled, tn_bonus))
-    rng = random.Random(seed)
-    n_sims = 2000
     tn = light_wounds + tn_bonus
+    rolled = water_ring + 1 + extra_rolled
 
-    def _simulate_serious(kept: int) -> float:
-        rolled = water_ring + 1 + extra_rolled
-        effective_kept = min(kept, rolled)
-        total_serious = 0
-        for _ in range(n_sims):
-            dice: list[int] = []
-            for _ in range(rolled):
-                total = 0
-                while True:
-                    roll = rng.randint(1, 10)
-                    total += roll
-                    if roll != 10:
-                        break
-                dice.append(total)
-            dice.sort(reverse=True)
-            roll_total = sum(dice[:effective_kept])
-            if roll_total < tn:
-                deficit = tn - roll_total
-                total_serious += 1 + (deficit // 10)
-        return total_serious / n_sims
-
-    baseline = _simulate_serious(kept=water_ring)
+    baseline = _expected_serious_wounds(rolled, water_ring, tn)
     best_spend = 0
     best_improvement = 0.0
 
     for spend in range(1, limit + 1):
-        expected = _simulate_serious(kept=water_ring + spend)
+        expected = _expected_serious_wounds(rolled, water_ring + spend, tn)
         improvement = baseline - expected
         if improvement >= threshold and improvement > best_improvement:
             best_improvement = improvement
@@ -111,6 +117,7 @@ def should_convert_light_to_serious(
     shinjo_wc_bonus_pool: int = 0,
     lw_severity_divisor: int = 1,
     mortal_wound_threshold: int | None = None,
+    lw_conversion: float = 0.8,
 ) -> bool:
     """Decide whether to convert light wounds to 1 serious wound on a passed wound check.
 
@@ -127,7 +134,7 @@ def should_convert_light_to_serious(
         return False
 
     avg_wc = water_ring * 6.5 + 2
-    threshold = max(10, round(avg_wc * 0.8))
+    threshold = max(10, round(avg_wc * lw_conversion))
 
     would_cripple = serious_wounds + 1 >= earth_ring
     if would_cripple:
@@ -425,6 +432,7 @@ def should_reactive_parry(
     is_kakita: bool = False,
     is_mirumoto: bool = False,
     known_bonus: int = 0,
+    parry_threshold: float = 0.6,
 ) -> bool:
     """Decide whether to parry with an action die already in this phase (1 die cost)."""
     if defender_parry_rank <= 0:
@@ -453,7 +461,7 @@ def should_reactive_parry(
         estimate_roll(parry_dice, air_ring) * crippled_mult
         + known_bonus
     )
-    if expected_parry >= attack_total * 0.6:
+    if expected_parry >= attack_total * parry_threshold:
         return True
 
     return False

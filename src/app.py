@@ -36,7 +36,9 @@ from src.engine.character_builders.waveman import (
 from src.engine.character_builders.xp_builder import compute_stats_from_xp
 from src.engine.character_builders.yogo import compute_yogo_stats_from_xp
 from src.engine.simulation import simulate_combat
+from src.mass_sim_ui import render_analysis_tab, render_mass_simulation_tab
 from src.models.character import Character, Ring, RingName, Rings, Skill, SkillType
+from src.models.mass_simulation import StrategyConfig
 from src.models.weapon import WEAPONS, WeaponType
 from src.ui_helpers import (
     compute_combat_stats,
@@ -244,10 +246,12 @@ def _maybe_repopulate_stats(prefix: str, build_choice: str,
     st.session_state[f"{prefix}_last_preset"] = build_choice
 
 
-def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, WeaponType, str]:
+def _build_character_sidebar(
+    label: str, key_prefix: str,
+) -> tuple[Character, WeaponType, str, StrategyConfig]:
     """Build character configuration in the sidebar.
 
-    Returns character, weapon type, and build choice.
+    Returns character, weapon type, build choice, and strategy config.
     """
     st.sidebar.header(f"{label}")
 
@@ -1682,7 +1686,41 @@ def _build_character_sidebar(label: str, key_prefix: str) -> tuple[Character, We
         profession_abilities=profession_abilities,
         xp_total=150 + earned_xp,
     )
-    return char, weapon_type_choice, build_choice
+
+    # --- Strategy knobs (collapsed by default) ---
+    with st.sidebar.expander(f"{label} Strategy", expanded=False):
+        st.session_state.setdefault(f"{key_prefix}_void_threshold", 0.25)
+        void_threshold = st.slider(
+            "Void threshold", 0.0, 1.0, step=0.05,
+            key=f"{key_prefix}_void_threshold",
+            help="Min expected SW saved per void spent on wound check",
+        )
+        st.session_state.setdefault(f"{key_prefix}_parry_agg", 0.60)
+        parry_agg = st.slider(
+            "Parry aggressiveness", 0.0, 1.0, step=0.05,
+            key=f"{key_prefix}_parry_agg",
+            help="Expected parry / attack total threshold for reactive parry",
+        )
+        st.session_state.setdefault(f"{key_prefix}_da_threshold", 0.85)
+        da_thresh = st.slider(
+            "DA threshold", 0.5, 1.0, step=0.05,
+            key=f"{key_prefix}_da_threshold",
+            help="Expected hit / DA TN threshold for double attack",
+        )
+        st.session_state.setdefault(f"{key_prefix}_lw_conversion", 0.80)
+        lw_conv = st.slider(
+            "LW conversion", 0.5, 1.0, step=0.05,
+            key=f"{key_prefix}_lw_conversion",
+            help="avg WC multiplier threshold for converting light to serious",
+        )
+    strategy = StrategyConfig(
+        void_threshold=void_threshold,
+        parry_aggressiveness=parry_agg,
+        da_threshold=da_thresh,
+        lw_conversion=lw_conv,
+    )
+
+    return char, weapon_type_choice, build_choice, strategy
 
 
 _VALID_BUILD_MODES = {
@@ -1719,9 +1757,18 @@ for _pf in ("f1", "f2"):
         except ValueError:
             pass
 
+# --- Handle load from mass sim analysis ---
+_pending = st.session_state.pop("_pending_load", None)
+if _pending:
+    for _k, _v in _pending.items():
+        st.session_state[_k] = _v
+    for _pf in ("f1", "f2"):
+        for _suffix in ("last_xp", "last_nc", "last_preset", "last_school_ring"):
+            st.session_state.pop(f"{_pf}_{_suffix}", None)
+
 # --- Sidebar: Character configuration ---
-char_a, wt_a, build_a = _build_character_sidebar("Fighter 1", "f1")
-char_b, wt_b, build_b = _build_character_sidebar("Fighter 2", "f2")
+char_a, wt_a, build_a, strat_a = _build_character_sidebar("Fighter 1", "f1")
+char_b, wt_b, build_b, strat_b = _build_character_sidebar("Fighter 2", "f2")
 
 # Compute display names from build choices
 if build_a == build_b:
@@ -1743,32 +1790,46 @@ for _pf in ("f1", "f2"):
     if _key in st.session_state:
         st.query_params[f"{_pf}_nc"] = str(st.session_state[_key])
 
-# --- Main area: Character cards ---
-col1, col2 = st.columns(2)
-weapon_a = WEAPONS[wt_a]
-weapon_b = WEAPONS[wt_b]
-render_character_card(char_a, weapon_a, col1)
-render_character_card(char_b, weapon_b, col2)
+# --- Tabs ---
+tab_single, tab_mass, tab_analysis = st.tabs(["Single Combat", "Mass Simulation", "Analysis"])
 
-# --- Fight button ---
-st.divider()
-is_duel = st.checkbox("Iaijutsu Duel", help="Begin with an iaijutsu duel before normal combat")
-if st.button("Fight!", type="primary", use_container_width=True):
-    with st.spinner("Simulating combat..."):
-        log = simulate_combat(char_a, char_b, weapon_a, weapon_b, is_duel=is_duel)
-        st.session_state["combat_log"] = log
+with tab_single:
+    # --- Main area: Character cards ---
+    col1, col2 = st.columns(2)
+    weapon_a = WEAPONS[wt_a]
+    weapon_b = WEAPONS[wt_b]
+    render_character_card(char_a, weapon_a, col1)
+    render_character_card(char_b, weapon_b, col2)
 
-# --- Results ---
-if "combat_log" in st.session_state:
-    log = st.session_state["combat_log"]
-
-    render_winner_banner(log)
-
-    stats = compute_combat_stats(log)
-    render_combat_stats(stats)
-
+    # --- Fight button ---
     st.divider()
-    render_wound_status(log)
+    is_duel = st.checkbox("Iaijutsu Duel", help="Begin with an iaijutsu duel before normal combat")
+    if st.button("Fight!", type="primary", use_container_width=True):
+        with st.spinner("Simulating combat..."):
+            log = simulate_combat(
+                char_a, char_b, weapon_a, weapon_b,
+                is_duel=is_duel,
+                strategy_a=strat_a, strategy_b=strat_b,
+            )
+            st.session_state["combat_log"] = log
 
-    st.divider()
-    render_round_log(log)
+    # --- Results ---
+    if "combat_log" in st.session_state:
+        log = st.session_state["combat_log"]
+
+        render_winner_banner(log)
+
+        stats = compute_combat_stats(log)
+        render_combat_stats(stats)
+
+        st.divider()
+        render_wound_status(log)
+
+        st.divider()
+        render_round_log(log)
+
+with tab_mass:
+    render_mass_simulation_tab()
+
+with tab_analysis:
+    render_analysis_tab()
